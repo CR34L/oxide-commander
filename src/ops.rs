@@ -27,12 +27,13 @@ pub fn home_dir() -> Option<PathBuf> {
 /// Work out (source, target) pairs for a copy/move to `dest_input`.
 /// Existing directory, trailing separator, or several sources => "into that folder".
 /// Otherwise a single source is copied/moved to exactly that path (i.e. rename).
+/// A single source whose own name ends the path (the F5/F6 default "<folder>/<name>")
+/// always means exactly that path, even when a folder of that name exists there.
 pub fn plan_targets(sources: &[PathBuf], dest_input: &str, base: &Path) -> Vec<(PathBuf, PathBuf)> {
     let dest = resolve_input(dest_input, base);
-    let into_dir = dest.is_dir()
-        || sources.len() > 1
-        || dest_input.trim_end().ends_with('/')
-        || dest_input.trim_end().ends_with('\\');
+    let trailing_sep = dest_input.trim_end().ends_with('/') || dest_input.trim_end().ends_with('\\');
+    let own_name = sources.len() == 1 && !trailing_sep && dest.file_name().is_some() && dest.file_name() == sources[0].file_name();
+    let into_dir = !own_name && (dest.is_dir() || sources.len() > 1 || trailing_sep);
     if into_dir {
         sources
             .iter()
@@ -292,6 +293,17 @@ mod tests {
 
         remove_path(&t.join("b")).unwrap();
         assert!(!t.join("b").exists());
+
+        // "<folder>/<own name>" is that exact path even when such a folder exists there;
+        // a trailing separator still means "into".
+        fs::create_dir_all(t.join("dst/c")).unwrap();
+        fs::create_dir_all(t.join("c")).unwrap();
+        let exact = plan_targets(&[t.join("c")], t.join("dst/c").to_str().unwrap(), &t);
+        assert_eq!(exact[0].1, t.join("dst/c"));
+        let into = plan_targets(&[t.join("c")], &format!("{}/", t.join("dst/c").display()), &t);
+        assert_eq!(into[0].1, t.join("dst/c/c"));
+        let renamed = plan_targets(&[t.join("c")], t.join("dst/c-old").to_str().unwrap(), &t);
+        assert_eq!(renamed[0].1, t.join("dst/c-old"));
         fs::remove_dir_all(&t).unwrap();
     }
 

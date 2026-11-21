@@ -24,13 +24,15 @@ fn main() -> eframe::Result {
     let downloads = home.join("Downloads");
     let defaults = [home.clone(), if downloads.is_dir() { downloads } else { home.clone() }];
 
-    let options = eframe::NativeOptions {
-        viewport: eframe::egui::ViewportBuilder::default()
-            .with_title("Mac Commander")
-            .with_inner_size([1280.0, 780.0])
-            .with_min_inner_size([760.0, 420.0])
-            .with_drag_and_drop(true),
-        ..Default::default()
-    };
+    // Reopen the window where and as big as it was (App::new puts it back on screen if
+    // that place is gone, e.g. a disconnected monitor).
+    let saved = settings::load().window;
+    let mut viewport = eframe::egui::ViewportBuilder::default()
+        .with_title("Mac Commander")
+        .with_inner_size(saved.map_or([1280.0, 780.0], |[_, _, w, h]| [w, h]))
+        .with_min_inner_size([760.0, 420.0])
+        .with_drag_and_drop(true);
+    if let Some([x, y, _, _]) = saved { viewport = viewport.with_position([x, y]); }
+    let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Mac Commander", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, [left_arg, right_arg], defaults)))))
 }

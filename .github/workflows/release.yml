@@ -1,5 +1,6 @@
 # Builds "Mac Commander.app" for Apple Silicon and publishes it as a GitHub Release.
-# Trigger: push a tag like v0.1.0 (it must match the version in Cargo.toml).
+# Trigger: push a tag like v0.1.2 (it must match the version in Cargo.toml).
+# No certificates are stored in GitHub: release builds are signed ad hoc.
 name: Release
 
 on:
@@ -42,13 +43,16 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          cat > notes.md <<NOTES
-          Mac Commander ${GITHUB_REF_NAME} for Apple Silicon Macs (M1 and later, macOS 11+).
-
-          Download the zip, unzip it and drag **Mac Commander.app** to Applications.
-
-          The app is not notarized by Apple. On first launch, right-click the app and choose
-          **Open**, or run: \`xattr -dr com.apple.quarantine "/Applications/Mac Commander.app"\`
-          NOTES
+          {
+            echo "Mac Commander ${GITHUB_REF_NAME} for Apple Silicon Macs (M1 and later, macOS 11+)."
+            echo
+            echo "Download the zip, unzip it and drag **Mac Commander.app** to Applications."
+            echo
+            echo "The app is not notarized. On first launch right-click it and choose **Open**,"
+            echo "or run: \`xattr -dr com.apple.quarantine \"/Applications/Mac Commander.app\"\`"
+            echo
+            echo "Tip: give Mac Commander **Full Disk Access** (System Settings → Privacy & Security) so"
+            echo "macOS stops asking about each folder; the sidebar has a link to that setting."
+          } > notes.md
           gh release create "$GITHUB_REF_NAME" Mac-Commander-*.zip SHA256SUMS.txt \
             --title "Mac Commander $GITHUB_REF_NAME" --notes-file notes.md

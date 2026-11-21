@@ -55,7 +55,8 @@ pub struct App {
     /// Finder favourites delivered by the background loader.
     finder_favorites: FinderFavorites,
     drives: Vec<Place>,
-    drives_at: Instant,
+    /// Background drive-list reader (reading free space can take 200 ms or more).
+    drive_watch: DriveWatch,
     type_ahead: (String, Instant),
     list_rects: [Rect; 2],
     focus_filter: Option<usize>,
@@ -76,6 +77,8 @@ pub struct App {
     term_frac: [f32; 2],
     /// Key and text events taken from the raw input for the shell.
     term_input: Vec<Event>,
+    /// Window geometry last seen and since when (saved once it has been still for a moment).
+    window_seen: Option<([f32; 4], Instant)>,
 }
 
 /// A panel's terminal. The shell keeps running while the pane is hidden.
@@ -112,8 +115,8 @@ impl App {
             message: None,
             favorites: places::favorites(),
             finder_favorites: spawn_finder_favorites(&cc.egui_ctx),
-            drives: places::drives(),
-            drives_at: Instant::now(),
+            drives: Vec::new(),
+            drive_watch: spawn_drive_watch(&cc.egui_ctx),
             type_ahead: (String::new(), Instant::now()),
             list_rects: [Rect::NOTHING; 2],
             focus_filter: None,
@@ -121,6 +124,24 @@ impl App {
             term_focus: None,
             term_frac: [0.45; 2],
             term_input: Vec::new(),
+            window_seen: None,
+        }
+    }
+
+    /// Remember the window position and size, once a move or resize has finished
+    /// (not while dragging: that would write the settings file many times a second).
+    fn track_window(&mut self, ctx: &egui::Context) {
+        let vp = ctx.input(|i| i.viewport().clone());
+        if vp.fullscreen == Some(true) || vp.minimized == Some(true) { return; }
+        let (Some(outer), Some(inner)) = (vp.outer_rect, vp.inner_rect) else { return };
+        let g = [outer.min.x, outer.min.y, inner.width(), inner.height()].map(f32::round);
+        match self.window_seen {
+            Some((last, since)) if last == g => {
+                if since.elapsed() > Duration::from_millis(500) && self.settings.window != Some(g) {
+                    self.settings.window = Some(g);
+                }
+            }
+            _ => self.window_seen = Some((g, Instant::now())),
         }
     }
 
@@ -227,11 +248,13 @@ impl App {
         if let Some(favs) = self.finder_favorites.slot.lock().unwrap().take() {
             self.favorites = favs;
         }
-        if self.drives_at.elapsed() > Duration::from_secs(3) {
-            self.drives = places::drives();
-            self.drives_at = Instant::now();
+        if let Some(drives) = self.drive_watch.slot.lock().unwrap().take() {
+            self.drives = drives;
         }
         for p in &mut self.panels { p.poll_changes(); }
+        for i in 0..2 {
+            if let Some(e) = self.panels[i].take_error() { self.error(e.to_string()); }
+        }
 
         if let Some(job) = &self.job && job.progress.finished.load(Ordering::Relaxed) {
             {
@@ -259,6 +282,7 @@ impl App {
             let idx = pos.and_then(|p| self.list_rects.iter().position(|r| r.contains(p))).unwrap_or(self.active);
             self.dialog = Dialog::Drop { paths: dropped, dest: self.panels[idx].path.clone() };
         }
+        self.track_window(ctx);
         self.settings.views = [self.panels[0].view(), self.panels[1].view()];
         self.settings.folders = [Some(self.panels[0].path.clone()), Some(self.panels[1].path.clone())];
         if self.settings != self.saved_settings {
@@ -267,7 +291,8 @@ impl App {
         }
 
         let busy = self.job.is_some() || self.panels.iter().any(Panel::is_calculating);
-        ctx.request_repaint_after(Duration::from_millis(if busy { 150 } else { 1000 }));
+        let loading = self.panels.iter().any(Panel::is_loading);
+        ctx.request_repaint_after(Duration::from_millis(if loading { 40 } else if busy { 150 } else { 1000 }));
 
         // Tab / Shift+Tab: switch between the left and right panel.
         if std::mem::take(&mut self.tab_presses) % 2 == 1 && matches!(self.dialog, Dialog::None) {
@@ -347,15 +372,20 @@ impl App {
             Key::Q if m.command => self.run(Cmd::Quit, ctx),
             Key::ArrowUp if m.command => self.run(Cmd::Up, ctx),
             Key::ArrowDown if m.command => self.run(Cmd::Open, ctx),
-            // ⌥↑ / ⌥↓ move one screen; PageUp / PageDown jump to the top / bottom.
+            // ⌥↑ / ⌥↓ move one screen; PageUp / PageDown go to the edge of the visible page,
+            // then page by page; with ⌘ (and Home / End) to the very top / bottom.
             Key::ArrowUp if m.alt => self.act().move_cursor(-page, m.shift),
             Key::ArrowDown if m.alt => self.act().move_cursor(page, m.shift),
             Key::ArrowUp => self.act().move_cursor(-1, m.shift),
             Key::ArrowDown => self.act().move_cursor(1, m.shift),
             Key::ArrowLeft if m.command => self.run(Cmd::Back, ctx),
             Key::ArrowRight if m.command => self.run(Cmd::Forward, ctx),
-            Key::PageUp | Key::Home => self.act().move_cursor(-isize::MAX / 2, m.shift),
-            Key::PageDown | Key::End => self.act().move_cursor(isize::MAX / 2, m.shift),
+            Key::PageUp if m.command => self.act().move_cursor(-isize::MAX / 2, m.shift),
+            Key::PageDown if m.command => self.act().move_cursor(isize::MAX / 2, m.shift),
+            Key::PageUp => self.act().page(false, ROW_H, m.shift),
+            Key::PageDown => self.act().page(true, ROW_H, m.shift),
+            Key::Home => self.act().move_cursor(-isize::MAX / 2, m.shift),
+            Key::End => self.act().move_cursor(isize::MAX / 2, m.shift),
             Key::Enter => self.run(Cmd::Open, ctx),
             Key::Backspace if m.command => self.run(Cmd::Trash, ctx),
             Key::Backspace => self.run(Cmd::Up, ctx),
@@ -410,7 +440,7 @@ impl App {
             Cmd::Forward => { let r = self.act().go_forward(); self.report(r); }
             Cmd::Refresh => {
                 for p in &mut self.panels { p.rescan(); }
-                self.drives = places::drives();
+                let _ = self.drive_watch.refresh.send(());
             }
             Cmd::ToggleHidden => {
                 let p = self.act();
@@ -451,8 +481,14 @@ impl App {
                 self.report(ops::open_in_editor(&path));
             }
             Cmd::Copy | Cmd::Move if targets.is_empty() => {}
-            Cmd::Copy => self.dialog = input(InputKind::Copy(targets), "Copy", format!("Copy {what} to:"), dir_string(&other_dir), "Copy", false),
-            Cmd::Move => self.dialog = input(InputKind::Move(targets), "Move", format!("Move {what} to:"), dir_string(&other_dir), "Move", false),
+            // One item: the full target path with its name (stem selected), so it can be renamed
+            // on the way; several items: just the folder.
+            Cmd::Copy | Cmd::Move => {
+                let one = targets.len() == 1;
+                let dest = if one { other_dir.join(&one_name).display().to_string() } else { dir_string(&other_dir) };
+                let (verb, kind) = if matches!(cmd, Cmd::Copy) { ("Copy", InputKind::Copy(targets)) } else { ("Move", InputKind::Move(targets)) };
+                self.dialog = input(kind, verb, format!("{verb} {what} to:"), dest, verb, one);
+            }
             Cmd::Rename => {
                 let Some(e) = self.act().current().filter(|e| !e.is_parent) else { return };
                 let path = e.path.clone();
@@ -546,6 +582,7 @@ impl App {
     fn sidebar(&mut self, ui: &mut Ui) {
         let mut go: Option<PathBuf> = None;
         let mut drop: Option<(DragPayload, PathBuf)> = None;
+        let mut open_settings = false;
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
             for (title, list) in [("Favorites", &self.favorites), ("Devices", &self.drives)] {
@@ -573,11 +610,24 @@ impl App {
                     if resp.clicked() { go = Some(place.path.clone()); }
                     if let Some(pl) = resp.dnd_release_payload::<DragPayload>() { drop = Some(((*pl).clone(), place.path.clone())); }
                 }
+                if title == "Favorites" && self.finder_favorites.no_access.load(Ordering::Relaxed) {
+                    // Without Full Disk Access macOS asks for every protected folder separately.
+                    ui.add_space(2.0);
+                    let link = ui.add(egui::Button::new(RichText::new("Allow access to all folders…").size(12.0).color(pal().accent)).frame(false))
+                        .on_hover_text("Opens System Settings → Privacy & Security → Full Disk Access. Turn on Mac Commander \
+                            there, then restart the app: macOS stops asking about Desktop, Documents, Downloads and drives, \
+                            and the sidebar shows your Finder favourites.");
+                    if link.clicked() { open_settings = true; }
+                }
                 ui.add_space(10.0);
             }
         });
         if let Some(dir) = go { let r = self.act().navigate(&dir, None); self.report(r); }
         if let Some((pl, dest)) = drop { self.drop_into(&pl, &dest); }
+        if open_settings {
+            let r = ops::open_with_system(Path::new("x-apple.systempreferences:com.apple.preference.security?Privacy_AllFiles"));
+            self.report(r);
+        }
     }
 
     fn panel_ui(&mut self, ui: &mut Ui, idx: usize) {
@@ -804,10 +854,14 @@ impl App {
         // Status line.
         let (items, sel, bytes) = self.panels[idx].summary();
         let free = self.free_space(&self.panels[idx].path.clone());
-        let mut text = format!("{items} items");
+        let loading = self.panels[idx].is_loading();
+        let mut text = if loading { "Loading folder…".to_string() } else { format!("{items} items") };
         if sel > 0 { text += &format!(" · {sel} selected ({})", human_size(bytes)); }
         if let Some(f) = free { text += &format!(" · {} available", human_size(f)); }
         if self.panels[idx].is_calculating() { text += " · calculating folder sizes…"; }
+        if loading {
+            ui.painter().text(self.list_rects[idx].center(), Align2::CENTER_CENTER, "Loading…", pal().font(14.0), pal().text_dim);
+        }
         let (sr, _) = ui.allocate_exact_size(vec2(w, status_h), Sense::hover());
         ui.painter().hline(sr.x_range(), sr.top(), Stroke::new(1.0, pal().line));
         ui.painter().with_clip_rect(sr.with_max_x(sr.right() - 120.0)).text(sr.left_center() + vec2(10.0, 0.0), Align2::LEFT_CENTER, text, pal().font(11.5), pal().text_dim);
@@ -913,9 +967,8 @@ impl App {
                     let mut out = TextEdit::singleline(buf).desired_width(f32::INFINITY).show(ui);
                     if *first_frame {
                         out.response.request_focus();
-                        let n = buf.chars().count();
-                        let end = if *select_stem { Path::new(buf.as_str()).file_stem().map_or(n, |s| s.to_string_lossy().chars().count()) } else { n };
-                        out.state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(0), CCursor::new(end))));
+                        let (start, end) = if *select_stem { stem_range(buf) } else { (0, buf.chars().count()) };
+                        out.state.cursor.set_char_range(Some(CCursorRange::two(CCursor::new(start), CCursor::new(end))));
                         out.state.store(ui.ctx(), out.response.id);
                         *first_frame = false;
                     }
@@ -1177,10 +1230,36 @@ impl eframe::App for App {
     }
 }
 
+/// Mounted drives, read by a background thread every 3 seconds (or at once when
+/// `refresh` is signalled). Never on the UI thread: macOS answers free-space queries
+/// through a system service, which takes 200 ms or more with network shares mounted.
+struct DriveWatch {
+    slot: Arc<Mutex<Option<Vec<Place>>>>,
+    refresh: std::sync::mpsc::Sender<()>,
+}
+
+fn spawn_drive_watch(ctx: &egui::Context) -> DriveWatch {
+    let slot = Arc::new(Mutex::new(None));
+    let (refresh, wake) = std::sync::mpsc::channel::<()>();
+    let (s, ctx) = (slot.clone(), ctx.clone());
+    std::thread::spawn(move || loop {
+        let drives = places::drives();
+        *s.lock().unwrap() = Some(drives);
+        ctx.request_repaint();
+        match wake.recv_timeout(Duration::from_secs(3)) {
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => break,
+            _ => while wake.try_recv().is_ok() {},
+        }
+    });
+    DriveWatch { slot, refresh }
+}
+
 /// Finder sidebar favourites, read by a background thread: once at startup and again
 /// whenever `refresh` is signalled (macOS only; elsewhere the built-in list stays).
 struct FinderFavorites {
     slot: Arc<Mutex<Option<Vec<Place>>>>,
+    /// The last read failed: no Full Disk Access (the sidebar then offers to set it up).
+    no_access: Arc<std::sync::atomic::AtomicBool>,
     refresh: std::sync::mpsc::Sender<()>,
     requested: Instant,
     was_focused: bool,
@@ -1188,20 +1267,21 @@ struct FinderFavorites {
 
 fn spawn_finder_favorites(ctx: &egui::Context) -> FinderFavorites {
     let slot = Arc::new(Mutex::new(None));
+    let no_access = Arc::new(std::sync::atomic::AtomicBool::new(false));
     let (refresh, wake) = std::sync::mpsc::channel::<()>();
     if cfg!(target_os = "macos") {
-        let (slot, ctx) = (slot.clone(), ctx.clone());
+        let (slot, no_access, ctx) = (slot.clone(), no_access.clone(), ctx.clone());
         // Reading can take a moment, so it stays off the UI thread.
         std::thread::spawn(move || loop {
-            if let Some(favs) = places::finder_favorites() {
-                *slot.lock().unwrap() = Some(favs);
-                ctx.request_repaint();
-            }
+            let favs = places::finder_favorites();
+            no_access.store(favs.is_none(), Ordering::Relaxed);
+            if let Some(favs) = favs { *slot.lock().unwrap() = Some(favs); }
+            ctx.request_repaint();
             if wake.recv().is_err() { break; }
             while wake.try_recv().is_ok() {}
         });
     }
-    FinderFavorites { slot, refresh, requested: Instant::now(), was_focused: true }
+    FinderFavorites { slot, no_access, refresh, requested: Instant::now(), was_focused: true }
 }
 
 /// Transfer speed over the last few seconds (smooth, but still reacts to changes).
@@ -1243,6 +1323,15 @@ fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
 }
 
+/// Character range of the last path part's name without its extension
+/// ("/a/b/photo.jpg" → "photo"; "notes" → "notes"; ".zshrc" → ".zshrc").
+fn stem_range(text: &str) -> (usize, usize) {
+    let start = text.rfind(['/', std::path::MAIN_SEPARATOR]).map_or(0, |i| text[..=i].chars().count());
+    let name: String = text.chars().skip(start).collect();
+    let stem = Path::new(&name).file_stem().map_or(name.chars().count(), |s| s.to_string_lossy().chars().count());
+    (start, start + stem)
+}
+
 fn dir_string(p: &Path) -> String {
     let mut s = p.display().to_string();
     if !s.ends_with(std::path::MAIN_SEPARATOR) { s.push(std::path::MAIN_SEPARATOR); }
@@ -1278,7 +1367,8 @@ fn read_text(path: &Path) -> Option<String> {
 const HELP: &[(&str, &str)] = &[
     ("Tab / ⇧Tab", "Switch between left and right panel"),
     ("↑ ↓", "Move (hold Shift to select)"),
-    ("PgUp / PgDn  (fn↑ / fn↓)", "Jump to top / bottom of the list"),
+    ("PgUp / PgDn  (fn↑ / fn↓)", "To the first / last visible row, then page by page"),
+    ("⌘PgUp / ⌘PgDn, Home / End", "Jump to top / bottom of the list"),
     ("⌥↑ / ⌥↓", "Move one screen up / down"),
     ("Enter / double-click", "Open folder or file"),
     ("Backspace  /  ⌘↑", "Enclosing folder"),
@@ -1303,3 +1393,16 @@ const HELP: &[(&str, &str)] = &[
     ("F9 / ⌘,", "Settings (look, terminal, Trash or delete, startup folders)"),
     ("F10 / ⌘Q", "Quit"),
 ];
+
+#[cfg(test)]
+mod tests {
+    use super::stem_range;
+
+    #[test]
+    fn stem_range_selects_name_without_extension() {
+        assert_eq!(stem_range("/Volumes/photo/Ürlaub.2024.jpg"), (15, 26));
+        assert_eq!(stem_range("notes"), (0, 5));
+        assert_eq!(stem_range("/x/.zshrc"), (3, 9));
+        assert_eq!(stem_range("photo.jpg"), (0, 5));
+    }
+}

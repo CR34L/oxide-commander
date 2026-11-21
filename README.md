@@ -59,7 +59,8 @@ cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
 |-----|--------|
 | Tab / ⇧Tab | switch between left and right panel |
 | ↑ ↓ | move (Shift = select) |
-| PgUp / PgDn (fn↑ / fn↓), Home / End | jump to top / bottom of the list |
+| PgUp / PgDn (fn↑ / fn↓) | to the first / last visible row, then page by page |
+| ⌘PgUp / ⌘PgDn, Home / End (fn← / fn→) | jump to top / bottom of the list |
 | ⌥↑ / ⌥↓ | move one screen |
 | Enter / double-click | open folder or file (on `..`: go up) |
 | Backspace, ⌘↑ / ⌘[ ⌘] | enclosing folder / back, forward |

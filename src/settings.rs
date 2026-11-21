@@ -60,6 +60,8 @@ pub struct Settings {
     /// macOS terminal app opened by F1 ("Terminal", "iTerm", …) in External mode.
     pub terminal: String,
     pub terminal_mode: TerminalMode,
+    /// Last window position and size in points: [x, y, width, height].
+    pub window: Option<[f32; 4]>,
 }
 
 impl Default for Settings {
@@ -68,6 +70,7 @@ impl Default for Settings {
             theme: Theme::Light, use_trash: true, remember_folders: true,
             folders: [None, None], views: [View::default(); 2], terminal: "Terminal".into(),
             terminal_mode: TerminalMode::Split,
+            window: None,
         }
     }
 }
@@ -108,7 +111,15 @@ fn parse(text: &str) -> Settings {
         views: parse_views(&map),
         terminal: map.get("terminal").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.terminal),
         terminal_mode: map.get("terminal_mode").and_then(|v| TerminalMode::from_key(v.trim())).unwrap_or(d.terminal_mode),
+        window: map.get("window").and_then(|v| parse_window(v)),
     }
+}
+
+/// "x,y,width,height" with a sane size (a broken value must not make the window vanish).
+fn parse_window(v: &str) -> Option<[f32; 4]> {
+    let n: Vec<f32> = v.split(',').map(|p| p.trim().parse().ok()).collect::<Option<_>>()?;
+    let [x, y, w, h] = <[f32; 4]>::try_from(n).ok()?;
+    ([x, y, w, h].iter().all(|v| v.is_finite()) && w >= 200.0 && h >= 150.0).then_some([x, y, w, h])
 }
 
 fn parse_views(map: &HashMap<&str, &str>) -> [View; 2] {
@@ -127,6 +138,7 @@ fn parse_views(map: &HashMap<&str, &str>) -> [View; 2] {
 fn format(s: &Settings) -> String {
     let mut out = format!("theme={}\nuse_trash={}\nremember_folders={}\nterminal={}\nterminal_mode={}\n",
         s.theme.key(), s.use_trash, s.remember_folders, s.terminal, s.terminal_mode.key());
+    if let Some([x, y, w, h]) = s.window { out += &format!("window={x:.0},{y:.0},{w:.0},{h:.0}\n"); }
     for ((side, v), folder) in SIDES.iter().zip(&s.views).zip(&s.folders) {
         out += &format!("{side}.sort={}\n{side}.ascending={}\n{side}.show_hidden={}\n", sort_name(v.sort), v.ascending, v.show_hidden);
         if let Some(f) = folder.as_ref().and_then(|f| f.to_str()).filter(|f| !f.contains('\n')) {
@@ -157,13 +169,15 @@ mod tests {
             folders: [Some(PathBuf::from("/tmp/a=b c")), None],
             terminal: "iTerm".into(),
             terminal_mode: TerminalMode::External,
+            window: Some([40.0, 60.0, 1400.0, 900.0]),
             views: [
                 View { sort: SortKey::Size, ascending: false, show_hidden: true },
                 View { sort: SortKey::Date, ascending: true, show_hidden: false },
             ],
         };
         assert_eq!(parse(&format(&s)), s);
-        assert_eq!(parse("garbage\nleft.sort=bogus\ntheme=purple"), Settings::default());
+        assert_eq!(parse("garbage\nleft.sort=bogus\ntheme=purple\nwindow=1,2,3"), Settings::default());
+        assert_eq!(parse("window=0,0,10,10").window, None, "tiny windows are ignored");
         // Files written by the previous version (views only) still load.
         assert_eq!(parse("left.sort=size\nleft.ascending=false").views[0].sort, SortKey::Size);
     }
