@@ -53,7 +53,7 @@ pub struct App {
     message: Option<(String, bool, Instant)>,
     favorites: Vec<Place>,
     /// Finder favourites delivered by the background loader.
-    finder_favorites: Arc<Mutex<Option<Vec<Place>>>>,
+    finder_favorites: FinderFavorites,
     drives: Vec<Place>,
     drives_at: Instant,
     type_ahead: (String, Instant),
@@ -215,7 +215,16 @@ impl App {
     // ---- per-frame housekeeping ------------------------------------------
 
     fn tick(&mut self, ctx: &egui::Context) {
-        if let Some(favs) = self.finder_favorites.lock().unwrap().take() {
+        // Re-read Finder's favourites when the window comes back to the front (at most every
+        // 10 minutes): they only change in Finder.
+        let focused = ctx.input(|i| i.viewport().focused).unwrap_or(false);
+        let ff = &mut self.finder_favorites;
+        if focused && !ff.was_focused && ff.requested.elapsed() > Duration::from_secs(600) {
+            ff.requested = Instant::now();
+            let _ = ff.refresh.send(());
+        }
+        ff.was_focused = focused;
+        if let Some(favs) = self.finder_favorites.slot.lock().unwrap().take() {
             self.favorites = favs;
         }
         if self.drives_at.elapsed() > Duration::from_secs(3) {
@@ -1168,21 +1177,31 @@ impl eframe::App for App {
     }
 }
 
-/// Read Finder's sidebar favourites now and once a minute (macOS only; elsewhere the
-/// built-in list stays). Reading can take a moment, so it runs off the UI thread.
-fn spawn_finder_favorites(ctx: &egui::Context) -> Arc<Mutex<Option<Vec<Place>>>> {
+/// Finder sidebar favourites, read by a background thread: once at startup and again
+/// whenever `refresh` is signalled (macOS only; elsewhere the built-in list stays).
+struct FinderFavorites {
+    slot: Arc<Mutex<Option<Vec<Place>>>>,
+    refresh: std::sync::mpsc::Sender<()>,
+    requested: Instant,
+    was_focused: bool,
+}
+
+fn spawn_finder_favorites(ctx: &egui::Context) -> FinderFavorites {
     let slot = Arc::new(Mutex::new(None));
+    let (refresh, wake) = std::sync::mpsc::channel::<()>();
     if cfg!(target_os = "macos") {
         let (slot, ctx) = (slot.clone(), ctx.clone());
+        // Reading can take a moment, so it stays off the UI thread.
         std::thread::spawn(move || loop {
             if let Some(favs) = places::finder_favorites() {
                 *slot.lock().unwrap() = Some(favs);
                 ctx.request_repaint();
             }
-            std::thread::sleep(Duration::from_secs(60));
+            if wake.recv().is_err() { break; }
+            while wake.try_recv().is_ok() {}
         });
     }
-    slot
+    FinderFavorites { slot, refresh, requested: Instant::now(), was_focused: true }
 }
 
 /// Transfer speed over the last few seconds (smooth, but still reacts to changes).

@@ -4,8 +4,9 @@ A dual-panel file manager with Total Commander function keys and a clean,
 Path Finder style look. Written in Rust (eframe/egui): one standalone binary
 for macOS, Windows and Linux.
 
-- **Sidebar**: on macOS, your Finder sidebar Favorites (same order, refreshed every
-  minute); elsewhere the standard folders. Below them, every mounted drive (internal
+- **Sidebar**: the standard folders (Home, Desktop, Documents, Downloads, …). On macOS,
+  if you give the app Full Disk Access (System Settings → Privacy & Security), it shows
+  your Finder sidebar Favorites instead, in Finder's order. Below them, every mounted drive (internal
   disks, USB, disk images, network shares) with a capacity bar, refreshed every few seconds.
 - **Mouse like Finder / Explorer**: click selects, double-click opens (on `..`: goes up),
   ⌘/Ctrl-click and ⇧-click extend the selection, right-click for actions, clicking empty

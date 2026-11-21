@@ -3,8 +3,9 @@
 //! Finder keeps them in `~/Library/Application Support/com.apple.sharedfilelist/
 //! com.apple.LSSharedFileList.FavoriteItems.sfl4` (sfl3/sfl2 on older systems): an
 //! NSKeyedArchiver plist whose items hold "bookmark" blobs with the folder path.
-//! That folder is privacy-protected; without Full Disk Access we ask Apple's `sfltool`
-//! (which goes through the system service) for a copy, read it and delete it again.
+//! That folder is privacy-protected: it can only be read when the app has Full Disk
+//! Access. Without it the sidebar shows the built-in list instead. (Asking `sfltool` for
+//! a copy is not an option: macOS shows an administrator password prompt for it.)
 
 use std::io::Cursor;
 use std::path::{Path, PathBuf};
@@ -12,23 +13,10 @@ use std::path::{Path, PathBuf};
 use plist::Value;
 
 /// Folder paths from Finder's sidebar "Favorites", in Finder's order.
-/// `None` when they can't be read (not macOS, or no access).
+/// `None` when they can't be read (not macOS, or no Full Disk Access).
 pub fn favorite_paths() -> Option<Vec<PathBuf>> {
     if !cfg!(target_os = "macos") { return None; }
-    let home = crate::ops::home_dir()?;
-    if let Some(paths) = read_from(&home.join("Library/Application Support")) {
-        return Some(paths);
-    }
-    let out = std::process::Command::new("/usr/bin/sfltool").arg("archive").output().ok()?;
-    // Prints: SharedFileList storage copied to '/tmp/SFL-archive_…'
-    let text = String::from_utf8_lossy(&out.stdout);
-    let archive = PathBuf::from(text.split('\'').nth(1)?);
-    let paths = read_from(&archive.join("Application Support"));
-    // The copy also contains recent-documents lists: never leave it lying around.
-    if archive.file_name().is_some_and(|n| n.to_string_lossy().starts_with("SFL-archive_")) {
-        let _ = std::fs::remove_dir_all(&archive);
-    }
-    paths
+    read_from(&crate::ops::home_dir()?.join("Library/Application Support"))
 }
 
 fn read_from(app_support: &Path) -> Option<Vec<PathBuf>> {
