@@ -281,6 +281,28 @@ pub fn installed_terminals() -> Vec<&'static str> {
     }).collect()
 }
 
+/// Editors and IDEs that can open a folder, offered by F1 (macOS app names).
+pub const MAC_EDITORS: [&str; 16] = [
+    "Visual Studio Code", "Visual Studio Code - Insiders", "VSCodium", "Cursor", "Windsurf", "Zed",
+    "Sublime Text", "Nova", "BBEdit", "Fleet", "RustRover", "IntelliJ IDEA", "IntelliJ IDEA CE",
+    "WebStorm", "PyCharm", "PyCharm CE",
+];
+
+/// Installed editors from [`MAC_EDITORS`], with the path of their app bundle.
+pub fn installed_editors() -> Vec<(&'static str, PathBuf)> {
+    if !cfg!(target_os = "macos") { return Vec::new(); }
+    let dirs: Vec<PathBuf> = [Some(PathBuf::from("/Applications")), home_dir().map(|h| h.join("Applications"))]
+        .into_iter().flatten().collect();
+    MAC_EDITORS.into_iter().filter_map(|name| {
+        dirs.iter().map(|d| d.join(format!("{name}.app"))).find(|p| p.exists()).map(|p| (name, p))
+    }).collect()
+}
+
+/// Open `dir` in an app (`open -a <app> <folder>`): editors open it as their project/workspace.
+pub fn open_dir_in_app(dir: &Path, app: &Path) -> io::Result<()> {
+    std::process::Command::new("open").arg("-a").arg(app).arg(dir).spawn().map(|_| ())
+}
+
 /// Open a terminal window in `dir`. `mac_app` names the macOS terminal app.
 pub fn open_terminal(dir: &Path, mac_app: &str) -> io::Result<()> {
     use std::process::Command;

@@ -32,11 +32,20 @@ struct DragPayload { from: usize, paths: Vec<PathBuf> }
 
 #[derive(Clone, Copy)]
 enum Cmd {
-    Help, Terminal, Settings, View, Edit, Copy, Move, Rename, NewFolder, Trash, Delete, Quit,
+    Help, Terminal, OpenIn, Settings, View, Edit, Copy, Move, Rename, NewFolder, Trash, Delete, Quit,
     Open, Up, Back, Forward, Refresh, ToggleHidden, SelectAll, Swap, CopyPath, Reveal,
 }
 
 enum InputKind { Copy(Vec<PathBuf>), Move(Vec<PathBuf>), Rename(PathBuf), NewFolder }
+
+#[derive(Clone, PartialEq)]
+enum OpenItem { Terminal, App(&'static str, PathBuf), Finder }
+
+impl OpenItem {
+    fn key(&self) -> &str {
+        match self { OpenItem::Terminal => "terminal", OpenItem::App(name, _) => name, OpenItem::Finder => "finder" }
+    }
+}
 
 enum Dialog {
     None,
@@ -46,6 +55,8 @@ enum Dialog {
     Clash { kind: Kind, pairs: Vec<(PathBuf, PathBuf)>, count: usize, names: String, can_merge: bool },
     Drop { paths: Vec<PathBuf>, dest: PathBuf },
     View { title: String, text: String },
+    /// F1: open the current folder in the terminal, an editor or Finder.
+    OpenIn { dir: PathBuf, items: Vec<OpenItem>, sel: usize },
     Help,
     Settings,
 }
@@ -82,6 +93,8 @@ pub struct App {
     term_frac: [f32; 2],
     /// Key and text events taken from the raw input for the shell.
     term_input: Vec<Event>,
+    /// Last choice in the F1 "Open folder in…" popup (preselected next time).
+    last_open_in: Option<String>,
     /// Window geometry last seen and since when (saved once it has been still for a moment).
     window_seen: Option<([f32; 4], Instant)>,
 }
@@ -129,6 +142,7 @@ impl App {
             term_focus: None,
             term_frac: [0.45; 2],
             term_input: Vec::new(),
+            last_open_in: None,
             window_seen: None,
         }
     }
@@ -359,7 +373,7 @@ impl App {
         let page = (self.act().view_height / ROW_H).max(1.0) as isize;
         match key {
             Key::F1 if m.shift => self.run(Cmd::Help, ctx),
-            Key::F1 => self.run(Cmd::Terminal, ctx),
+            Key::F1 => self.run(Cmd::OpenIn, ctx),
             Key::T if m.command => self.run(Cmd::Terminal, ctx),
             Key::Questionmark | Key::Slash if m.command => self.run(Cmd::Help, ctx),
             Key::F2 => self.run(Cmd::Rename, ctx),
@@ -427,6 +441,15 @@ impl App {
         match cmd {
             Cmd::Help => self.dialog = Dialog::Help,
             Cmd::Settings => self.dialog = Dialog::Settings,
+            // F1 inside the focused terminal hides it; otherwise ask where to open the folder.
+            Cmd::OpenIn if self.term_has_keys() => self.toggle_terminal(ctx),
+            Cmd::OpenIn => {
+                let mut items = vec![OpenItem::Terminal];
+                items.extend(ops::installed_editors().into_iter().map(|(name, app)| OpenItem::App(name, app)));
+                if cfg!(target_os = "macos") { items.push(OpenItem::Finder); }
+                let sel = items.iter().position(|i| Some(i.key()) == self.last_open_in.as_deref()).unwrap_or(0);
+                self.dialog = Dialog::OpenIn { dir: self.act().path.clone(), items, sel };
+            }
             Cmd::Terminal if self.builtin_terminal() => self.toggle_terminal(ctx),
             Cmd::Terminal => {
                 let dir = self.act().path.clone();
@@ -934,7 +957,7 @@ impl App {
         ui.add_space(4.0);
         // Function key buttons.
         let delete_label = if self.settings.use_trash { "Trash" } else { "Delete" };
-        let keys: [(&str, &str, Cmd); 10] = [("F1", "Terminal", Cmd::Terminal), ("F2", "Rename", Cmd::Rename), ("F3", "View", Cmd::View),
+        let keys: [(&str, &str, Cmd); 10] = [("F1", "Open in…", Cmd::OpenIn), ("F2", "Rename", Cmd::Rename), ("F3", "View", Cmd::View),
             ("F4", "Edit", Cmd::Edit), ("F5", "Copy", Cmd::Copy), ("F6", "Move", Cmd::Move), ("F7", "New Folder", Cmd::NewFolder),
             ("F8", delete_label, Cmd::Trash), ("F9", "Settings", Cmd::Settings), ("F10", "Quit", Cmd::Quit)];
         let gap = 6.0;
@@ -1096,6 +1119,60 @@ impl App {
                     });
                 });
                 if resp.should_close() { keep = false; }
+            }
+            Dialog::OpenIn { dir, items, sel } => {
+                let mut choice: Option<usize> = None;
+                let terminal_label = if self.builtin_terminal() { "Terminal (below the panel)".to_string() }
+                    else { format!("{} window", self.settings.terminal) };
+                // Keys act once per frame (egui may run a frame twice with the same input).
+                if ctx.current_pass_index() == 0 {
+                    ctx.input_mut(|i| {
+                        let n = items.len();
+                        if i.consume_key(Modifiers::NONE, Key::ArrowDown) { *sel = (*sel + 1) % n; }
+                        if i.consume_key(Modifiers::NONE, Key::ArrowUp) { *sel = (*sel + n - 1) % n; }
+                        if i.consume_key(Modifiers::NONE, Key::Enter) { choice = Some(*sel); }
+                        if i.consume_key(Modifiers::NONE, Key::F1) { choice = Some(0); } // F1 F1 = terminal
+                        const DIGITS: [Key; 9] = [Key::Num1, Key::Num2, Key::Num3, Key::Num4, Key::Num5, Key::Num6, Key::Num7, Key::Num8, Key::Num9];
+                        for (k, key) in DIGITS.into_iter().enumerate().take(n) {
+                            if i.consume_key(Modifiers::NONE, key) { choice = Some(k); }
+                        }
+                    });
+                }
+                let resp = Modal::new(Id::unique("open_in")).show(ctx, |ui| {
+                    ui.set_width(380.0);
+                    ui.label(RichText::new("Open folder in…").size(16.0).strong());
+                    ui.label(RichText::new(terminal::short_dir(dir)).size(12.0).color(pal().text_dim));
+                    ui.add_space(8.0);
+                    for (k, item) in items.iter().enumerate() {
+                        let name = match item {
+                            OpenItem::Terminal => terminal_label.clone(),
+                            OpenItem::App(name, _) => name.to_string(),
+                            OpenItem::Finder => "Finder".to_string(),
+                        };
+                        let text = if k < 9 { format!("{}   {name}", k + 1) } else { format!("    {name}") };
+                        let r = ui.add_sized([ui.available_width(), 26.0], egui::Button::selectable(k == *sel, RichText::new(text).size(14.0)));
+                        if r.clicked() { choice = Some(k); }
+                        if r.hovered() { *sel = k; }
+                    }
+                    ui.add_space(8.0);
+                    ui.label(RichText::new("↑↓ and Enter, or the number. F1 again: terminal. Esc: cancel.").size(11.5).color(pal().text_dim));
+                });
+                if resp.should_close() { keep = false; }
+                if let Some(k) = choice {
+                    keep = false;
+                    let (dir, item) = (dir.clone(), items[k].clone());
+                    self.last_open_in = Some(item.key().to_string());
+                    match item {
+                        OpenItem::Terminal => self.run(Cmd::Terminal, ctx),
+                        OpenItem::App(name, app) => {
+                            match ops::open_dir_in_app(&dir, &app) {
+                                Ok(()) => self.info(format!("Opened in {name}")),
+                                Err(e) => self.error(format!("Could not open {name}: {e}")),
+                            }
+                        }
+                        OpenItem::Finder => { let r = ops::open_with_system(&dir); self.report(r); }
+                    }
+                }
             }
             Dialog::Settings => {
                 let resp = Modal::new(Id::unique("settings")).show(ctx, |ui| {
@@ -1436,7 +1513,8 @@ const HELP: &[(&str, &str)] = &[
     ("⇧⌘.", "Show / hide hidden files in this panel"),
     ("⌃U", "Swap panels"),
     ("⌘R", "Refresh"),
-    ("F1 / ⌘T", "Terminal below the current panel; F1 again hides it (or a separate window, see Settings)"),
+    ("F1", "Open the folder in… the terminal, VS Code or another editor, Finder (F1 twice: terminal)"),
+    ("⌘T", "Terminal below the current panel; again hides it (or a separate window, see Settings)"),
     ("⇧F1 / ⌘?", "This help"),
     ("F9 / ⌘,", "Settings (look, terminal, Trash or delete, startup folders)"),
     ("F10 / ⌘Q", "Quit"),

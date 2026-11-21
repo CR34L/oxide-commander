@@ -28,15 +28,18 @@ for macOS, Windows and Linux.
 - When a target already exists you choose: **Replace** (the old item is removed),
   **Merge** (folders: contents are combined, same names inside are replaced) or
   **Rename** (keep both: the new item gets a number, e.g. `photo (1).jpg`).
-- **Built-in terminals (F1)**: each panel can have its own. F1 splits the current
+- **Open in… (F1)**: a popup opens the current folder in the terminal, an installed
+  editor (VS Code, Cursor, Zed, Sublime Text, JetBrains IDEs, …) or Finder. Pick with
+  ↑↓ and Enter or the number; the last choice is preselected. F1 twice opens the terminal.
+- **Built-in terminals (F1 F1 / ⌘T)**: each panel can have its own. The terminal splits the current
   panel: the file list stays on top, and a shell opens below it in that panel's folder.
-  Open one on the left and one on the right to work in two shells side by side. Drag the divider to resize. F1 or
+  Open one on the left and one on the right to work in two shells side by side. Drag the divider to resize. F1 F1 or
   ⌘T gives the terminal the keyboard and hides it again; the shell keeps running while
   hidden. Click a panel to type into the file list again. "cd to panel folder" sends
   the panel's folder to the shell. Mouse-select and ⌘C copy, ⌘V pastes, and the wheel
   scrolls back. Full-screen programs such as less get their own screen.
 - **Settings (F9 / ⌘,)**: Light, Dark or Norton (retro blue/cyan/yellow, monospace)
-  look; F1 opens the built-in terminal or a separate terminal app window; F8 moves to Trash or deletes immediately;
+  look; the terminal is built in or a separate terminal app window; F8 moves to Trash or deletes immediately;
   reopen the last folders at startup.
 
 ## Download
@@ -71,7 +74,8 @@ cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
 | ⌘-click / ⇧-click | add to selection / select range |
 | type letters | jump to name |
 | ⌘F | filter |
-| F1 / ⌘T | terminal below the current panel; again: hide it (or a separate window, see Settings) |
+| F1 | open the folder in… terminal, VS Code / other editor, Finder (F1 twice: terminal) |
+| ⌘T | terminal below the current panel; again: hide it (or a separate window, see Settings) |
 | ⇧F1 / ⌘? | help |
 | F2 / ⇧F6 | rename |
 | F3 | view text / Quick Look |
