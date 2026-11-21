@@ -1,6 +1,6 @@
 [package]
 name = "oxide-commander"
-version = "0.1.1"
+version = "0.2.0"
 edition = "2024"
 description = "Dual-panel file manager with Total Commander function keys and built-in terminals"
 license = "MIT"
