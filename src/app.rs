@@ -68,18 +68,23 @@ pub struct App {
     saved_settings: settings::Settings,
     /// Copy / move / delete operations waiting for the running one: they never run in parallel.
     queue: std::collections::VecDeque<(Kind, Vec<(PathBuf, PathBuf)>)>,
-    /// Built-in terminal (Settings → Terminal): the shell keeps running while the pane is hidden.
-    term: Option<TermPane>,
-    term_open: bool,
-    /// The terminal has keyboard focus; key events go to the shell instead of the panels.
-    term_focus: bool,
-    term_dir: PathBuf,
-    term_rect: Rect,
-    /// Panel (0 left, 1 right) whose column the terminal splits, and the terminal's share of its height.
-    term_side: usize,
-    term_frac: f32,
+    /// Built-in terminals (Settings → Terminal), one per panel, each below its file list.
+    terms: [Option<SideTerm>; 2],
+    /// Side whose terminal has the keyboard; key events go to that shell instead of the panels.
+    term_focus: Option<usize>,
+    /// Each terminal's share of its column height (kept when the terminal is closed).
+    term_frac: [f32; 2],
     /// Key and text events taken from the raw input for the shell.
     term_input: Vec<Event>,
+}
+
+/// A panel's terminal. The shell keeps running while the pane is hidden.
+struct SideTerm {
+    pane: TermPane,
+    open: bool,
+    /// Folder the shell started in (shown until the shell sets a title).
+    dir: PathBuf,
+    rect: Rect,
 }
 
 impl App {
@@ -112,50 +117,52 @@ impl App {
             type_ahead: (String::new(), Instant::now()),
             list_rects: [Rect::NOTHING; 2],
             focus_filter: None,
-            term: None,
-            term_open: false,
-            term_focus: false,
-            term_dir: PathBuf::new(),
-            term_rect: Rect::NOTHING,
-            term_side: 0,
-            term_frac: 0.45,
+            terms: [None, None],
+            term_focus: None,
+            term_frac: [0.45; 2],
             term_input: Vec::new(),
         }
     }
 
     fn builtin_terminal(&self) -> bool { self.settings.terminal_mode != TerminalMode::External }
 
-    /// Keystrokes currently belong to the built-in terminal.
-    fn term_has_keys(&self) -> bool {
-        self.term_focus && self.term_open && self.term.is_some() && self.builtin_terminal() && matches!(self.dialog, Dialog::None)
+    fn term_visible(&self, side: usize) -> bool {
+        self.builtin_terminal() && self.terms[side].as_ref().is_some_and(|t| t.open)
     }
 
-    /// F1: show the built-in terminal under the active panel (starting a shell in its folder
-    /// if needed) and give it the keyboard; hide it when it already has the keyboard.
+    /// Keystrokes currently belong to a built-in terminal (not after its shell has ended).
+    fn term_has_keys(&self) -> bool {
+        self.term_focus.is_some_and(|s| self.term_visible(s) && self.terms[s].as_ref().is_some_and(|t| !t.pane.exited))
+            && matches!(self.dialog, Dialog::None)
+    }
+
+    /// F1: show the terminal under the active panel (starting a shell in its folder if
+    /// needed) and give it the keyboard; hide it when it already has the keyboard.
     fn toggle_terminal(&mut self, ctx: &egui::Context) {
-        let alive = self.term.as_ref().is_some_and(|t| !t.exited);
-        if self.term_open && self.term_focus && alive && self.term_side == self.active {
-            self.term_open = false;
-            self.term_focus = false;
+        let side = self.active;
+        let alive = self.terms[side].as_ref().is_some_and(|t| !t.pane.exited);
+        if alive && self.term_visible(side) && self.term_focus == Some(side) {
+            if let Some(t) = self.terms[side].as_mut() { t.open = false; }
+            self.term_focus = None;
             return;
         }
         if !alive {
             let dir = self.act().path.clone();
             match TermPane::spawn(&dir, ctx) {
-                Ok(t) => { self.term = Some(t); self.term_dir = dir; }
+                Ok(pane) => self.terms[side] = Some(SideTerm { pane, open: true, dir, rect: Rect::NOTHING }),
                 Err(e) => { self.error(format!("Could not start the shell: {e}")); return; }
             }
         }
-        self.term_side = self.active;
-        self.term_open = true;
-        self.term_focus = true;
+        if let Some(t) = self.terms[side].as_mut() { t.open = true; }
+        self.term_focus = Some(side);
         ctx.memory_mut(|m| if let Some(id) = m.focused() { m.surrender_focus(id) });
     }
 
-    fn terminal_ui(&mut self, ui: &mut Ui) {
-        let focused = self.term_focus;
-        let active_dir = self.panels[self.active].path.clone();
-        let Some(t) = self.term.as_mut() else { return };
+    fn terminal_ui(&mut self, ui: &mut Ui, side: usize) {
+        let focused = self.term_focus == Some(side);
+        let panel_dir = self.panels[side].path.clone();
+        let Some(st) = self.terms[side].as_mut() else { return };
+        let t = &mut st.pane;
         let frame = egui::Frame::new()
             .fill(pal().list_bg)
             .stroke(Stroke::new(if focused { 2.0 } else { 1.0 }, if focused { pal().accent } else { pal().border }))
@@ -171,12 +178,12 @@ impl App {
                     ui.add_space(6.0);
                     if ui.add(egui::Button::new("×").min_size(vec2(24.0, 20.0))).on_hover_text("Hide the terminal (F1). The shell keeps running.").clicked() { hide = true; }
                     if !t.exited && ui.add(egui::Button::new(RichText::new("cd to panel folder").size(12.0)).min_size(vec2(0.0, 20.0)))
-                        .on_hover_text(dir_string(&active_dir)).clicked() {
-                        t.cd(&active_dir);
+                        .on_hover_text(dir_string(&panel_dir)).clicked() {
+                        t.cd(&panel_dir);
                     }
                     ui.with_layout(Layout::left_to_right(Align::Center), |ui| {
                         ui.add_space(8.0);
-                        let title = if t.title.is_empty() { terminal::short_dir(&self.term_dir) } else { t.title.clone() };
+                        let title = if t.title.is_empty() { terminal::short_dir(&st.dir) } else { t.title.clone() };
                         ui.label(RichText::new("Terminal").size(12.5).strong().color(if focused { pal().header_active } else { pal().text_dim }));
                         ui.add(egui::Label::new(RichText::new(title).size(12.5).color(pal().text_dim)).truncate());
                     });
@@ -186,12 +193,14 @@ impl App {
             ui.add(egui::Separator::default().spacing(0.0));
             t.show(ui, focused)
         });
-        self.term_rect = resp.response.rect;
+        st.rect = resp.response.rect;
+        if hide { st.open = false; }
         if resp.inner.clicked() || resp.inner.drag_started() {
-            self.term_focus = true;
+            self.term_focus = Some(side);
+            self.active = side;
             ui.ctx().memory_mut(|m| if let Some(id) = m.focused() { m.surrender_focus(id) });
         }
-        if hide { self.term_open = false; self.term_focus = false; }
+        if hide && self.term_focus == Some(side) { self.term_focus = None; }
     }
 
     fn act(&mut self) -> &mut Panel { &mut self.panels[self.active] }
@@ -278,6 +287,9 @@ impl App {
             });
             (keys, texts)
         });
+        // egui may run a frame twice with the same input (multi-pass layout). The events are
+        // taken out above in every pass, but acted on only in the first.
+        if ctx.current_pass_index() > 0 { return; }
         if typing {
             // In the filter box: Esc / Enter / arrows return to the list.
             for (k, _) in &keys {
@@ -360,6 +372,8 @@ impl App {
     // ---- commands ---------------------------------------------------------
 
     fn run(&mut self, cmd: Cmd, ctx: &egui::Context) {
+        // A repeated pass (see handle_keys) must not run a command, e.g. a button click, twice.
+        if ctx.current_pass_index() > 0 { return; }
         // F8 follows the "Move to Trash" setting; ⇧F8 always deletes immediately.
         let cmd = if matches!(cmd, Cmd::Trash) && !self.settings.use_trash { Cmd::Delete } else { cmd };
         let targets = self.act().targets();
@@ -558,7 +572,7 @@ impl App {
     }
 
     fn panel_ui(&mut self, ui: &mut Ui, idx: usize) {
-        let active = idx == self.active && !self.term_focus;
+        let active = idx == self.active && self.term_focus.is_none();
         let frame = egui::Frame::new()
             .fill(pal().list_bg)
             .stroke(Stroke::new(if active { 2.0 } else { 1.0 }, if active { pal().accent } else { pal().border }))
@@ -1094,17 +1108,17 @@ impl eframe::App for App {
         egui::Panel::bottom("bottom")
             .frame(egui::Frame::new().fill(pal().sidebar_bg).inner_margin(Margin::symmetric(10, 6)))
             .show(ui, |ui| self.bottom_bar(ui));
-        let show_term = self.term_open && self.term.is_some() && self.builtin_terminal();
-        if show_term {
-            let input = std::mem::take(&mut self.term_input);
-            if let Some(t) = self.term.as_mut() { t.input(input, &ctx); }
-            // A click anywhere else gives the keyboard back to the panels.
-            if ctx.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| !self.term_rect.contains(p))) {
-                self.term_focus = false;
+        // Answer the shells' queries and notice exits even while a terminal is hidden.
+        for t in self.terms.iter_mut().flatten() { t.pane.drain_events(&ctx); }
+        if !self.term_focus.is_some_and(|s| self.term_visible(s)) { self.term_focus = None; }
+        let input = std::mem::take(&mut self.term_input);
+        if let Some(s) = self.term_focus && let Some(t) = self.terms[s].as_mut() {
+            t.pane.input(input, &ctx);
+            // A click anywhere else gives the keyboard back to the panels (or the other terminal).
+            let rect = t.rect;
+            if ctx.input(|i| i.pointer.any_pressed() && i.pointer.press_origin().is_some_and(|p| !rect.contains(p))) {
+                self.term_focus = None;
             }
-        } else {
-            self.term_input.clear();
-            self.term_focus = false;
         }
         egui::CentralPanel::no_frame().frame(egui::Frame::new().fill(pal().app_bg)).show(ui, |ui| {
             let full = ui.available_rect_before_wrap().shrink(8.0);
@@ -1112,7 +1126,7 @@ impl eframe::App for App {
             let half = (full.width() - gap) / 2.0;
             for idx in 0..2 {
                 let r = Rect::from_min_size(full.min + vec2(idx as f32 * (half + gap), 0.0), vec2(half, full.height()));
-                if !(show_term && idx == self.term_side) {
+                if !self.term_visible(idx) {
                     let mut child = ui.new_child(egui::UiBuilder::new().max_rect(r).id_salt(("panel", idx)));
                     self.panel_ui(&mut child, idx);
                     continue;
@@ -1120,22 +1134,22 @@ impl eframe::App for App {
                 // The terminal splits this panel's column: file list on top, terminal below,
                 // with a draggable divider in the gap. Both keep at least 120 points.
                 let min = 120.0;
-                let term_h = (r.height() * self.term_frac).clamp(min, (r.height() - gap - min).max(min));
+                let term_h = (r.height() * self.term_frac[idx]).clamp(min, (r.height() - gap - min).max(min));
                 let top = Rect::from_min_max(r.min, egui::pos2(r.max.x, r.max.y - term_h - gap));
                 let bottom = Rect::from_min_max(egui::pos2(r.min.x, r.max.y - term_h), r.max);
                 let divider = Rect::from_min_max(egui::pos2(r.min.x, top.max.y), egui::pos2(r.max.x, bottom.min.y));
-                let drag = ui.interact(divider, Id::unique("term_divider"), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
+                let drag = ui.interact(divider, Id::unique(("term_divider", idx)), Sense::drag()).on_hover_cursor(egui::CursorIcon::ResizeVertical);
                 if drag.dragged() { ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical); }
                 if drag.dragged() && let Some(p) = drag.interact_pointer_pos() {
-                    self.term_frac = ((r.max.y - p.y - gap / 2.0) / r.height()).clamp(0.12, 0.88);
+                    self.term_frac[idx] = ((r.max.y - p.y - gap / 2.0) / r.height()).clamp(0.12, 0.88);
                 }
                 if drag.hovered() || drag.dragged() {
                     ui.painter().hline(divider.x_range().shrink(divider.width() * 0.4), divider.center().y, Stroke::new(3.0, pal().border));
                 }
                 let mut child = ui.new_child(egui::UiBuilder::new().max_rect(top).id_salt(("panel", idx)));
                 self.panel_ui(&mut child, idx);
-                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bottom).id_salt("terminal"));
-                self.terminal_ui(&mut child);
+                let mut child = ui.new_child(egui::UiBuilder::new().max_rect(bottom).id_salt(("terminal", idx)));
+                self.terminal_ui(&mut child, idx);
             }
         });
 

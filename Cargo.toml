@@ -2,6 +2,9 @@
 name = "mac-commander"
 version = "0.1.0"
 edition = "2024"
+description = "Dual-panel file manager with Total Commander function keys and built-in terminals"
+license = "MIT"
+repository = "https://github.com/CR34L/mac-commander"
 
 [dependencies]
 alacritty_terminal = { version = "0.26", default-features = false }

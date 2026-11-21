@@ -92,7 +92,8 @@ impl TermPane {
         self.write(format!(" cd '{quoted}'\r").into_bytes());
     }
 
-    fn drain_events(&mut self, ctx: &egui::Context) {
+    /// Handle what the shell asked for (replies, title, clipboard, exit). Called every frame.
+    pub fn drain_events(&mut self, ctx: &egui::Context) {
         let events = std::mem::take(&mut *self.queue.lock().unwrap());
         for e in events {
             match e {
@@ -146,7 +147,6 @@ impl TermPane {
     /// of the whole terminal area (clicked = wants keyboard focus).
     pub fn show(&mut self, ui: &mut Ui, focused: bool) -> egui::Response {
         let ctx = ui.ctx().clone();
-        self.drain_events(&ctx);
         let font = FontId::monospace(FONT_SIZE);
         let (cw, ch) = ctx.fonts_mut(|f| (f.glyph_width(&font, 'M'), f.row_height(&font)));
         self.cell = vec2(cw, ch);
@@ -255,7 +255,8 @@ impl TermPane {
             let side = if x.fract() < 0.5 { Side::Left } else { Side::Right };
             (Point::new(Line(row - offset), Column(col)), side)
         };
-        if resp.hovered() {
+        // Only in the first pass: a repeated pass (multi-pass layout) gets the same wheel delta.
+        if resp.hovered() && ui.ctx().current_pass_index() == 0 {
             let dy = ui.input(|i| i.smooth_scroll_delta.y);
             self.scroll_rest += dy / ch;
             let n = self.scroll_rest.trunc() as i32;
@@ -278,7 +279,10 @@ impl TermPane {
             if resp.double_clicked() {
                 term.selection = Some(Selection::new(SelectionType::Semantic, p, side));
             } else if resp.drag_started() {
+                // Start where the button went down, not where the drag threshold was passed.
+                let (p, side) = to_point(ui.input(|i| i.pointer.press_origin()).unwrap_or(pos));
                 term.selection = Some(Selection::new(SelectionType::Simple, p, side));
+                if let Some(s) = term.selection.as_mut() { s.update(to_point(pos).0, to_point(pos).1); }
             } else if resp.dragged() {
                 if let Some(s) = term.selection.as_mut() { s.update(p, side); }
             } else if resp.clicked() {
@@ -317,6 +321,10 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         else if app_cursor { Some(format!("\x1bO{c}").into_bytes()) }
         else { Some(format!("\x1b[{c}").into_bytes()) }
     };
+    // F1–F4: ESC O P…S, with modifiers ESC [ 1 ; m P…S.
+    let ss3 = |c: char| {
+        if csi_mod > 1 { Some(format!("\x1b[1;{csi_mod}{c}").into_bytes()) } else { Some(format!("\x1bO{c}").into_bytes()) }
+    };
     let tilde = |n: u8| {
         if csi_mod > 1 { Some(format!("\x1b[{n};{csi_mod}~").into_bytes()) } else { Some(format!("\x1b[{n}~").into_bytes()) }
     };
@@ -340,10 +348,10 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         Key::Delete => tilde(3),
         Key::PageUp => tilde(5),
         Key::PageDown => tilde(6),
-        Key::F1 => s("\x1bOP"),
-        Key::F2 => s("\x1bOQ"),
-        Key::F3 => s("\x1bOR"),
-        Key::F4 => s("\x1bOS"),
+        Key::F1 => ss3('P'),
+        Key::F2 => ss3('Q'),
+        Key::F3 => ss3('R'),
+        Key::F4 => ss3('S'),
         Key::F5 => tilde(15),
         Key::F6 => tilde(17),
         Key::F7 => tilde(18),
@@ -355,7 +363,7 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
         _ if m.ctrl => {
             let name = key.name();
             let c = if name.len() == 1 { name.chars().next()? } else {
-                match key { Key::Space => ' ', Key::OpenBracket => '[', Key::Backslash => '\\', Key::CloseBracket => ']', Key::Minus => '_', _ => return None }
+                match key { Key::Space => ' ', Key::OpenBracket => '[', Key::Backslash => '\\', Key::CloseBracket => ']', Key::Minus => '-', Key::Slash => '/', _ => return None }
             };
             match c {
                 'A'..='Z' => Some(vec![c as u8 - b'A' + 1]),
@@ -364,7 +372,8 @@ pub fn key_bytes(key: Key, m: Modifiers, app_cursor: bool) -> Option<Vec<u8>> {
                 '[' => Some(vec![0x1b]),
                 '\\' => Some(vec![0x1c]),
                 ']' => Some(vec![0x1d]),
-                '_' => Some(vec![0x1f]),
+                // Ctrl+- and Ctrl+/ send 0x1f (undo in zsh and bash).
+                '-' | '/' | '_' => Some(vec![0x1f]),
                 _ => None,
             }
         }
@@ -452,6 +461,9 @@ mod tests {
         assert_eq!(key_bytes(Key::ArrowUp, none, true), Some(b"\x1bOA".to_vec()));
         assert_eq!(key_bytes(Key::ArrowLeft, Modifiers { shift: true, ..none }, false), Some(b"\x1b[1;2D".to_vec()));
         assert_eq!(key_bytes(Key::F5, none, false), Some(b"\x1b[15~".to_vec()));
+        assert_eq!(key_bytes(Key::F3, none, false), Some(b"\x1bOR".to_vec()));
+        assert_eq!(key_bytes(Key::F3, Modifiers { shift: true, ..none }, false), Some(b"\x1b[1;2R".to_vec()));
+        assert_eq!(key_bytes(Key::Minus, ctrl, false), Some(vec![0x1f]));
         // Letters without Control come as text, and ⌥ letters are composed characters (e.g. ⌥L = @).
         assert_eq!(key_bytes(Key::L, Modifiers { alt: true, ..none }, false), None);
         assert_eq!(key_bytes(Key::A, none, false), None);

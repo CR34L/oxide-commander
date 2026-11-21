@@ -24,8 +24,9 @@ for macOS, Windows and Linux.
   and Cancel. Moves within one drive are instant; across drives they copy, then delete.
   New operations started while one is running are **queued** and run one after
   another, never in parallel.
-- **Built-in terminal (F1)**: splits the current panel. The file list stays on top,
-  and a shell opens below it in that panel's folder. Drag the divider to resize. F1 or
+- **Built-in terminals (F1)**: each panel can have its own. F1 splits the current
+  panel: the file list stays on top, and a shell opens below it in that panel's folder.
+  Open one on the left and one on the right to work in two shells side by side. Drag the divider to resize. F1 or
   ⌘T gives the terminal the keyboard and hides it again; the shell keeps running while
   hidden. Click a panel to type into the file list again. "cd to panel folder" sends
   the panel's folder to the shell. Mouse-select and ⌘C copy, ⌘V pastes, and the wheel
@@ -73,3 +74,7 @@ cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
 On a Mac the F-keys are media keys by default. Hold `fn`, or enable *System
 Settings → Keyboard → Use F1, F2, etc. keys as standard function keys*. The
 F-key buttons at the bottom are always clickable. On Windows and Linux, ⌘ means Ctrl.
+
+## License
+
+MIT, see [LICENSE](LICENSE).
