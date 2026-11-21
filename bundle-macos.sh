@@ -4,6 +4,8 @@ set -e
 cd "$(dirname "$0")"
 cargo build --release
 APP="dist/Mac Commander.app"
+# Version from Cargo.toml, so the app and the release tag always match.
+VERSION=$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -1)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/mac-commander "$APP/Contents/MacOS/mac-commander"
@@ -16,8 +18,8 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleIdentifier</key><string>local.maccommander</string>
   <key>CFBundleExecutable</key><string>mac-commander</string>
   <key>CFBundlePackageType</key><string>APPL</string>
-  <key>CFBundleShortVersionString</key><string>0.1.0</string>
-  <key>CFBundleVersion</key><string>1</string>
+  <key>CFBundleShortVersionString</key><string>$VERSION</string>
+  <key>CFBundleVersion</key><string>$VERSION</string>
   <key>LSMinimumSystemVersion</key><string>11.0</string>
   <key>NSHighResolutionCapable</key><true/>
 </dict></plist>

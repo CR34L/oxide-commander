@@ -35,6 +35,16 @@ for macOS, Windows and Linux.
   look; F1 opens the built-in terminal or a separate terminal app window; F8 moves to Trash or deletes immediately;
   reopen the last folders at startup.
 
+## Download
+
+Apple Silicon Macs (M1 and later): get the zip from the
+[latest release](https://github.com/CR34L/mac-commander/releases/latest), unzip it and drag
+**Mac Commander.app** to Applications. The app is not notarized: on first launch right-click
+it and choose **Open**.
+
+Releases are built by GitHub Actions when a version tag is pushed
+(`git tag v0.1.0 && git push origin v0.1.0`; the tag must match `version` in `Cargo.toml`).
+
 ## Run
 
 ```sh
