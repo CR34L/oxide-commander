@@ -1,0 +1,14 @@
+.build/
+build/
+.swiftpm/
+.DS_Store
+
+
+# Added by cargo
+
+/target
+dist/
+
+# oh-my-claudecode runtime state (project skills stay committable)
+.omc/*
+!.omc/skills/
