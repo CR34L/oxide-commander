@@ -1,4 +1,4 @@
-# Mac Commander
+# Oxide Commander
 
 A dual-panel file manager with Total Commander function keys and a clean,
 Path Finder style look. Written in Rust (eframe/egui): one standalone binary
@@ -15,8 +15,8 @@ for macOS, Windows and Linux.
   back/forward/up buttons, clickable path bar, filter box, sortable columns
   (Name, Size, Kind, Date Modified), free space in the status line.
 - **Remembered per panel**: sort column and direction plus the "Hidden files"
-  switch. They're stored in `~/Library/Application Support/Mac Commander/settings.txt`
-  (Windows: `%APPDATA%\Mac Commander`, Linux: `~/.config/mac-commander`).
+  switch. They're stored in `~/Library/Application Support/Oxide Commander/settings.txt`
+  (Windows: `%APPDATA%\Oxide Commander`, Linux: `~/.config/oxide-commander`).
 - **Drag and drop** between panels, onto folders, onto sidebar drives, or from
   Finder/Explorer. You're asked whether to copy or move.
 - Folder sizes are calculated in the background (shown as "…" until ready),
@@ -25,6 +25,9 @@ for macOS, Windows and Linux.
   and Cancel. Moves within one drive are instant; across drives they copy, then delete.
   New operations started while one is running are **queued** and run one after
   another, never in parallel.
+- When a target already exists you choose: **Replace** (the old item is removed),
+  **Merge** (folders: contents are combined, same names inside are replaced) or
+  **Rename** (keep both: the new item gets a number, e.g. `photo (1).jpg`).
 - **Built-in terminals (F1)**: each panel can have its own. F1 splits the current
   panel: the file list stays on top, and a shell opens below it in that panel's folder.
   Open one on the left and one on the right to work in two shells side by side. Drag the divider to resize. F1 or
@@ -39,8 +42,8 @@ for macOS, Windows and Linux.
 ## Download
 
 Apple Silicon Macs (M1 and later): get the zip from the
-[latest release](https://github.com/CR34L/mac-commander/releases/latest), unzip it and drag
-**Mac Commander.app** to Applications. The app is not notarized: on first launch right-click
+[latest release](https://github.com/CR34L/oxide-commander/releases/latest), unzip it and drag
+**Oxide Commander.app** to Applications. The app is not notarized: on first launch right-click
 it and choose **Open**.
 
 Releases are built by GitHub Actions when a version tag is pushed
@@ -50,7 +53,7 @@ Releases are built by GitHub Actions when a version tag is pushed
 
 ```sh
 cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
-./bundle-macos.sh                               # builds dist/Mac Commander.app
+./bundle-macos.sh                               # builds dist/Oxide Commander.app
 ```
 
 ## Keys

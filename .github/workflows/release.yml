@@ -1,4 +1,4 @@
-# Builds "Mac Commander.app" for Apple Silicon and publishes it as a GitHub Release.
+# Builds "Oxide Commander.app" for Apple Silicon and publishes it as a GitHub Release.
 # Trigger: push a tag like v0.1.2 (it must match the version in Cargo.toml).
 # No certificates are stored in GitHub: release builds are signed ad hoc.
 name: Release
@@ -15,6 +15,8 @@ jobs:
     runs-on: macos-15  # Apple Silicon (arm64) runner
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0  # full history: the build number is the commit count
 
       - name: Check tag matches Cargo.toml version
         run: |
@@ -36,23 +38,23 @@ jobs:
 
       - name: Package
         run: |
-          ditto -c -k --keepParent "dist/Mac Commander.app" "Mac-Commander-${GITHUB_REF_NAME}-macos-arm64.zip"
-          shasum -a 256 Mac-Commander-*.zip > SHA256SUMS.txt
+          ditto -c -k --keepParent "dist/Oxide Commander.app" "Oxide-Commander-${GITHUB_REF_NAME}-macos-arm64.zip"
+          shasum -a 256 Oxide-Commander-*.zip > SHA256SUMS.txt
 
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           {
-            echo "Mac Commander ${GITHUB_REF_NAME} for Apple Silicon Macs (M1 and later, macOS 11+)."
+            echo "Oxide Commander ${GITHUB_REF_NAME} for Apple Silicon Macs (M1 and later, macOS 11+)."
             echo
-            echo "Download the zip, unzip it and drag **Mac Commander.app** to Applications."
+            echo "Download the zip, unzip it and drag **Oxide Commander.app** to Applications."
             echo
             echo "The app is not notarized. On first launch right-click it and choose **Open**,"
-            echo "or run: \`xattr -dr com.apple.quarantine \"/Applications/Mac Commander.app\"\`"
+            echo "or run: \`xattr -dr com.apple.quarantine \"/Applications/Oxide Commander.app\"\`"
             echo
-            echo "Tip: give Mac Commander **Full Disk Access** (System Settings → Privacy & Security) so"
+            echo "Tip: give Oxide Commander **Full Disk Access** (System Settings → Privacy & Security) so"
             echo "macOS stops asking about each folder; the sidebar has a link to that setting."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" Mac-Commander-*.zip SHA256SUMS.txt \
-            --title "Mac Commander $GITHUB_REF_NAME" --notes-file notes.md
+          gh release create "$GITHUB_REF_NAME" Oxide-Commander-*.zip SHA256SUMS.txt \
+            --title "Oxide Commander $GITHUB_REF_NAME" --notes-file notes.md

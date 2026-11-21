@@ -171,6 +171,57 @@ pub fn try_rename(src: &Path, dst: &Path) -> io::Result<bool> {
     Ok(fs::rename(src, dst).is_ok())
 }
 
+/// What to do when a copy/move target already exists.
+#[derive(Clone, Copy, PartialEq, Debug)]
+pub enum Clash {
+    /// Remove the existing item first: afterwards the target is exactly the source.
+    Replace,
+    /// Folders: combine the contents (same-named files inside are overwritten).
+    Merge,
+}
+
+/// Merge-move folder `src` into existing folder `dst` by renaming, which is instant on
+/// the same drive. `Ok(false)`: not on the same drive (nothing changed): copy instead.
+pub fn merge_rename(src: &Path, dst: &Path) -> io::Result<bool> {
+    if !same_device(src, dst) { return Ok(false); }
+    for entry in fs::read_dir(src)? {
+        let entry = entry?;
+        let (from, to) = (entry.path(), dst.join(entry.file_name()));
+        let both_dirs = entry.file_type()?.is_dir() && fs::symlink_metadata(&to).is_ok_and(|m| m.is_dir());
+        if both_dirs {
+            merge_rename(&from, &to)?;
+        } else {
+            if exists(&to) { remove_path(&to)?; }
+            fs::rename(&from, &to)?;
+        }
+    }
+    fs::remove_dir(src)
+        .map(|_| true)
+}
+
+#[cfg(unix)]
+fn same_device(a: &Path, b: &Path) -> bool {
+    use std::os::unix::fs::MetadataExt;
+    matches!((fs::symlink_metadata(a), fs::metadata(b)), (Ok(x), Ok(y)) if x.dev() == y.dev())
+}
+
+#[cfg(not(unix))]
+fn same_device(_: &Path, _: &Path) -> bool { false }
+
+/// First free "name (1).ext", "name (2).ext", … next to `dst` (folders: "name (1)"),
+/// also avoiding names in `taken` (targets planned in the same operation).
+pub fn unique_target(dst: &Path, taken: &std::collections::HashSet<PathBuf>) -> PathBuf {
+    let name = dst.file_name().unwrap_or_default().to_string_lossy().into_owned();
+    // "archive.tar.gz" keeps ".gz" only; ".zshrc" has no extension.
+    let (stem, ext) = match name.rfind('.') {
+        Some(i) if i > 0 && !dst.is_dir() => (name[..i].to_string(), name[i..].to_string()),
+        _ => (name.clone(), String::new()),
+    };
+    (1..).map(|n| dst.with_file_name(format!("{stem} ({n}){ext}")))
+        .find(|p| !exists(p) && !taken.contains(p))
+        .unwrap()
+}
+
 pub fn move_path(src: &Path, dst: &Path, progress: Progress) -> io::Result<()> {
     if try_rename(src, dst)? { return Ok(()); }
     copy_path(src, dst, progress)?;
@@ -326,6 +377,35 @@ mod tests {
         assert!(r.is_err());
         std::thread::sleep(std::time::Duration::from_millis(500));
         assert!(!t.join("partial.bin").exists());
+        fs::remove_dir_all(&t).unwrap();
+    }
+
+    #[test]
+    fn clash_helpers() {
+        let t = tmp("clash");
+        fs::write(t.join("photo.jpg"), "a").unwrap();
+        fs::write(t.join("photo (1).jpg"), "b").unwrap();
+        fs::create_dir(t.join("Folder")).unwrap();
+        let none = std::collections::HashSet::new();
+        assert_eq!(unique_target(&t.join("photo.jpg"), &none), t.join("photo (2).jpg"));
+        assert_eq!(unique_target(&t.join("Folder"), &none), t.join("Folder (1)"));
+        let taken = [t.join("Folder (1)")].into_iter().collect();
+        assert_eq!(unique_target(&t.join("Folder"), &taken), t.join("Folder (2)"));
+
+        // Merge by renaming: both sides' files survive, same names are overwritten.
+        fs::create_dir_all(t.join("src/sub")).unwrap();
+        fs::write(t.join("src/new.txt"), "new").unwrap();
+        fs::write(t.join("src/same.txt"), "from src").unwrap();
+        fs::write(t.join("src/sub/deep.txt"), "deep").unwrap();
+        fs::create_dir_all(t.join("dst/sub")).unwrap();
+        fs::write(t.join("dst/old.txt"), "old").unwrap();
+        fs::write(t.join("dst/same.txt"), "from dst").unwrap();
+        fs::write(t.join("dst/sub/keep.txt"), "keep").unwrap();
+        assert!(merge_rename(&t.join("src"), &t.join("dst")).unwrap());
+        assert!(!t.join("src").exists(), "source is gone after the move");
+        for (f, want) in [("new.txt", "new"), ("old.txt", "old"), ("same.txt", "from src"), ("sub/deep.txt", "deep"), ("sub/keep.txt", "keep")] {
+            assert_eq!(fs::read_to_string(t.join("dst").join(f)).unwrap(), want, "{f}");
+        }
         fs::remove_dir_all(&t).unwrap();
     }
 

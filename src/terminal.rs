@@ -61,7 +61,7 @@ impl TermPane {
         let mut env = HashMap::from([
             ("TERM".to_string(), "xterm-256color".to_string()),
             ("COLORTERM".to_string(), "truecolor".to_string()),
-            ("TERM_PROGRAM".to_string(), "MacCommander".to_string()),
+            ("TERM_PROGRAM".to_string(), "OxideCommander".to_string()),
         ]);
         // Started from Finder there is no locale: without one zsh shows UTF-8 names as escapes.
         if ["LANG", "LC_ALL", "LC_CTYPE"].iter().all(|v| std::env::var_os(v).is_none()) {

@@ -1,10 +1,10 @@
 [package]
-name = "mac-commander"
+name = "oxide-commander"
 version = "0.1.1"
 edition = "2024"
 description = "Dual-panel file manager with Total Commander function keys and built-in terminals"
 license = "MIT"
-repository = "https://github.com/CR34L/mac-commander"
+repository = "https://github.com/CR34L/oxide-commander"
 
 [dependencies]
 alacritty_terminal = { version = "0.26", default-features = false }

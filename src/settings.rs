@@ -1,9 +1,9 @@
 //! App settings and per-panel view settings, saved between launches.
 //!
 //! Stored as simple `key=value` lines in:
-//! - macOS:   ~/Library/Application Support/Mac Commander/settings.txt
-//! - Windows: %APPDATA%\Mac Commander\settings.txt
-//! - Linux:   $XDG_CONFIG_HOME/mac-commander/settings.txt (or ~/.config/…)
+//! - macOS:   ~/Library/Application Support/Oxide Commander/settings.txt
+//! - Windows: %APPDATA%\Oxide Commander\settings.txt
+//! - Linux:   $XDG_CONFIG_HOME/oxide-commander/settings.txt (or ~/.config/…)
 
 use std::collections::HashMap;
 use std::fs;
@@ -77,18 +77,29 @@ impl Default for Settings {
 
 pub fn file() -> Option<PathBuf> {
     let base = if cfg!(target_os = "macos") {
-        crate::ops::home_dir()?.join("Library/Application Support/Mac Commander")
+        crate::ops::home_dir()?.join("Library/Application Support/Oxide Commander")
     } else if cfg!(windows) {
-        PathBuf::from(std::env::var_os("APPDATA")?).join("Mac Commander")
+        PathBuf::from(std::env::var_os("APPDATA")?).join("Oxide Commander")
     } else {
         std::env::var_os("XDG_CONFIG_HOME").map(PathBuf::from)
             .or_else(|| crate::ops::home_dir().map(|h| h.join(".config")))?
-            .join("mac-commander")
+            .join("oxide-commander")
     };
     Some(base.join("settings.txt"))
 }
 
+/// The app was called "Mac Commander" before 0.2: move its settings folder over once.
+fn migrate_old_name() {
+    let Some(new) = file().and_then(|f| f.parent().map(PathBuf::from)) else { return };
+    let old_name = if cfg!(any(target_os = "macos", windows)) { "Mac Commander" } else { "mac-commander" };
+    let Some(old) = new.parent().map(|p| p.join(old_name)) else { return };
+    if old.is_dir() && !new.exists() {
+        let _ = fs::rename(&old, &new);
+    }
+}
+
 pub fn load() -> Settings {
+    migrate_old_name();
     file().and_then(|f| fs::read_to_string(f).ok()).map(|t| parse(&t)).unwrap_or_default()
 }
 

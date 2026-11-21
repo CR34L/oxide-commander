@@ -13,7 +13,7 @@ use eframe::egui::{
 };
 
 use crate::jobs::{self, Job, Kind};
-use crate::ops::{self, human_size};
+use crate::ops::{self, human_size, Clash};
 use crate::panel::{Panel, SortKey};
 use crate::places::{self, paint_capacity, paint_icon, Place};
 use crate::settings::{self, TerminalMode};
@@ -22,6 +22,9 @@ use crate::sizes::DirSizes;
 use crate::theme::{self, pal, Theme};
 
 const ROW_H: f32 = 22.0;
+
+/// A copy/move/delete waiting for the running one: kind, (source, target) pairs, clash mode.
+type QueuedJob = (Kind, Vec<(PathBuf, PathBuf)>, Clash);
 
 /// Items being dragged between panels or onto the sidebar.
 #[derive(Clone)]
@@ -39,6 +42,8 @@ enum Dialog {
     None,
     Input { kind: InputKind, title: String, prompt: String, buf: String, ok: &'static str, first_frame: bool, select_stem: bool },
     Confirm { title: String, text: String, ok: &'static str, kind: Kind, pairs: Vec<(PathBuf, PathBuf)> },
+    /// Copy/move targets exist: replace, merge (folders) or rename (keep both).
+    Clash { kind: Kind, pairs: Vec<(PathBuf, PathBuf)>, count: usize, names: String, can_merge: bool },
     Drop { paths: Vec<PathBuf>, dest: PathBuf },
     View { title: String, text: String },
     Help,
@@ -68,7 +73,7 @@ pub struct App {
     settings: settings::Settings,
     saved_settings: settings::Settings,
     /// Copy / move / delete operations waiting for the running one: they never run in parallel.
-    queue: std::collections::VecDeque<(Kind, Vec<(PathBuf, PathBuf)>)>,
+    queue: std::collections::VecDeque<QueuedJob>,
     /// Built-in terminals (Settings → Terminal), one per panel, each below its file list.
     terms: [Option<SideTerm>; 2],
     /// Side whose terminal has the keyboard; key events go to that shell instead of the panels.
@@ -269,8 +274,8 @@ impl App {
                     Some(e) => self.error(format!("{msg}. Error: {e}")),
                     None => self.info(format!("{} {done} item(s)", job.kind.done_verb())),
                 }
-                if let Some((kind, pairs)) = self.queue.pop_front() {
-                    self.start(kind, pairs, ctx);
+                if let Some((kind, pairs, clash)) = self.queue.pop_front() {
+                    self.start(kind, pairs, clash, ctx);
                 }
             }
         }
@@ -497,7 +502,7 @@ impl App {
             Cmd::NewFolder => self.dialog = input(InputKind::NewFolder, "New Folder", "Name of the new folder:".into(), "untitled folder".into(), "Create", false),
             Cmd::Trash if !targets.is_empty() => {
                 let pairs = targets.into_iter().map(|p| (p, PathBuf::new())).collect();
-                self.start(Kind::Trash, pairs, ctx);
+                self.start(Kind::Trash, pairs, Clash::Replace, ctx);
             }
             Cmd::Delete if !targets.is_empty() => {
                 let pairs = targets.into_iter().map(|p| (p, PathBuf::new())).collect();
@@ -547,28 +552,36 @@ impl App {
                 return self.error(format!("“{}” is already in that folder", file_name(s)));
             }
         }
-        let clashes = pairs.iter().filter(|(s, d)| ops::exists(d) && !ops::same_file(s, d)).count();
-        if clashes > 0 {
-            self.dialog = Dialog::Confirm {
-                title: "Replace existing items?".into(),
-                text: format!("{clashes} item(s) with the same name already exist in the destination. Replace them?"),
-                ok: "Replace",
-                kind, pairs,
-            };
-        } else {
-            self.start(kind, pairs, ctx);
+        let clashing: Vec<&PathBuf> = pairs.iter().filter(|(s, d)| ops::exists(d) && !ops::same_file(s, d)).map(|(_, d)| d).collect();
+        if clashing.is_empty() {
+            return self.start(kind, pairs, Clash::Replace, ctx);
         }
+        let can_merge = pairs.iter().any(|(s, d)| s.is_dir() && d.is_dir() && !ops::same_file(s, d));
+        let mut names: Vec<String> = clashing.iter().take(3).map(|d| format!("“{}”", file_name(d))).collect();
+        if clashing.len() > 3 { names.push(format!("and {} more", clashing.len() - 3)); }
+        let count = clashing.len();
+        self.dialog = Dialog::Clash { kind, pairs, count, names: names.join(", "), can_merge };
     }
 
-    fn start(&mut self, kind: Kind, pairs: Vec<(PathBuf, PathBuf)>, ctx: &egui::Context) {
+    /// Rename: every clashing target gets the first free "name (n)".
+    fn keep_both(pairs: Vec<(PathBuf, PathBuf)>) -> Vec<(PathBuf, PathBuf)> {
+        let mut taken = std::collections::HashSet::new();
+        pairs.into_iter().map(|(s, d)| {
+            let d = if (ops::exists(&d) && !ops::same_file(&s, &d)) || taken.contains(&d) { ops::unique_target(&d, &taken) } else { d };
+            taken.insert(d.clone());
+            (s, d)
+        }).collect()
+    }
+
+    fn start(&mut self, kind: Kind, pairs: Vec<(PathBuf, PathBuf)>, clash: Clash, ctx: &egui::Context) {
         if self.job.is_some() {
             // One operation at a time: wait in line behind the running one.
-            self.queue.push_back((kind, pairs));
+            self.queue.push_back((kind, pairs, clash));
             let n = self.queue.len();
             return self.info(format!("{} queued: starts when the current operation is done ({n} waiting)", kind.ing()));
         }
         self.speed = SpeedMeter::default();
-        self.job = Some(jobs::spawn(kind, pairs, ctx.clone()));
+        self.job = Some(jobs::spawn(kind, pairs, clash, ctx.clone()));
     }
 
     fn drop_into(&mut self, payload: &DragPayload, dest: &Path) {
@@ -614,7 +627,7 @@ impl App {
                     // Without Full Disk Access macOS asks for every protected folder separately.
                     ui.add_space(2.0);
                     let link = ui.add(egui::Button::new(RichText::new("Allow access to all folders…").size(12.0).color(pal().accent)).frame(false))
-                        .on_hover_text("Opens System Settings → Privacy & Security → Full Disk Access. Turn on Mac Commander \
+                        .on_hover_text("Opens System Settings → Privacy & Security → Full Disk Access. Turn on Oxide Commander \
                             there, then restart the app: macOS stops asking about Desktop, Documents, Downloads and drives, \
                             and the sidebar shows your Finder favourites.");
                     if link.clicked() { open_settings = true; }
@@ -1005,7 +1018,42 @@ impl App {
                 if yes {
                     keep = false;
                     if let Dialog::Confirm { kind, pairs, .. } = std::mem::replace(dialog, Dialog::None) {
-                        self.start(kind, pairs, ctx);
+                        self.start(kind, pairs, Clash::Replace, ctx);
+                    }
+                }
+            }
+            Dialog::Clash { kind, count, names, can_merge, .. } => {
+                let mut choice: Option<Option<Clash>> = None; // Some(None) = rename
+                let resp = Modal::new(Id::unique("clash")).show(ctx, |ui| {
+                    ui.set_width(460.0);
+                    let title = if *count == 1 { "An item with this name already exists" } else { "Items with these names already exist" };
+                    ui.label(RichText::new(title).size(16.0).strong());
+                    ui.add_space(6.0);
+                    ui.label(format!("{names} {} in the destination.", if *count == 1 { "is already" } else { "are already" }));
+                    ui.add_space(4.0);
+                    let verb = if *kind == Kind::Move { "moved" } else { "copied" };
+                    let mut help = format!("Replace: remove the existing {}.  Rename: keep both, the {verb} {} gets a number, e.g. “name (1)”.",
+                        if *count == 1 { "item" } else { "items" }, if *count == 1 { "item" } else { "items" });
+                    if *can_merge { help += "  Merge: combine folder contents (same names inside are replaced)."; }
+                    ui.label(RichText::new(help).size(12.0).color(pal().text_dim));
+                    ui.add_space(12.0);
+                    ui.with_layout(Layout::right_to_left(Align::Center), |ui| {
+                        if ui.add(egui::Button::new(RichText::new("Replace").color(Color32::WHITE)).fill(pal().danger).min_size(vec2(80.0, 26.0))).clicked() { choice = Some(Some(Clash::Replace)); }
+                        if *can_merge && ui.add(egui::Button::new("Merge").min_size(vec2(80.0, 26.0))).clicked() { choice = Some(Some(Clash::Merge)); }
+                        if ui.add(egui::Button::new(RichText::new("Rename").color(pal().accent_text)).fill(pal().accent).min_size(vec2(80.0, 26.0))).clicked() { choice = Some(None); }
+                        if ui.add(egui::Button::new("Cancel").min_size(vec2(80.0, 26.0))).clicked() { keep = false; }
+                    });
+                    // Enter takes the harmless choice (nothing is lost).
+                    if ui.input(|i| i.key_pressed(Key::Enter)) { choice = Some(None); }
+                });
+                if resp.should_close() { keep = false; }
+                if let Some(c) = choice {
+                    keep = false;
+                    if let Dialog::Clash { kind, pairs, .. } = std::mem::replace(dialog, Dialog::None) {
+                        match c {
+                            Some(clash) => self.start(kind, pairs, clash, ctx),
+                            None => self.start(kind, Self::keep_both(pairs), Clash::Replace, ctx),
+                        }
                     }
                 }
             }
