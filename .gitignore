@@ -9,6 +9,6 @@ build/
 /target
 dist/
 
-# oh-my-claudecode runtime state (project skills stay committable)
+# OMC runtime state (project skills stay committable)
 .omc/*
 !.omc/skills/

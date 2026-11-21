@@ -1,8 +1,10 @@
 # Oxide Commander
 
-A dual-panel file manager with Total Commander function keys and a clean,
-Path Finder style look. Written in Rust (eframe/egui): one standalone binary
-for macOS, Windows and Linux.
+A minimalistic file manager in the spirit of Norton Commander / Midnight Commander,
+built in Rust, with only the essential features for coders.
+
+Dual panels, Total Commander function keys and a clean, Path Finder style look,
+built with eframe/egui: one standalone binary for macOS, Windows and Linux.
 
 - **Sidebar**: the standard folders (Home, Desktop, Documents, Downloads, …). On macOS,
   if you give the app Full Disk Access (System Settings → Privacy & Security), it shows
