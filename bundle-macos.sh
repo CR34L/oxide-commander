@@ -22,6 +22,7 @@ BUILD=$(git rev-list --count HEAD 2>/dev/null || echo 0)
 rm -rf "$APP"
 mkdir -p "$APP/Contents/MacOS" "$APP/Contents/Resources"
 cp target/release/oxide-commander "$APP/Contents/MacOS/oxide-commander"
+cp assets/AppIcon.icns "$APP/Contents/Resources/AppIcon.icns"
 # The bundle identifier ties macOS privacy permissions to the app: never change it.
 cat > "$APP/Contents/Info.plist" <<PLIST
 <?xml version="1.0" encoding="UTF-8"?>
@@ -31,6 +32,7 @@ cat > "$APP/Contents/Info.plist" <<PLIST
   <key>CFBundleDisplayName</key><string>Oxide Commander</string>
   <key>CFBundleIdentifier</key><string>io.github.cr34l.maccommander</string>
   <key>CFBundleExecutable</key><string>oxide-commander</string>
+  <key>CFBundleIconFile</key><string>AppIcon</string>
   <key>CFBundlePackageType</key><string>APPL</string>
   <key>CFBundleShortVersionString</key><string>$VERSION</string>
   <key>CFBundleVersion</key><string>$VERSION.$BUILD</string>

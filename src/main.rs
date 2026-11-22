@@ -36,6 +36,10 @@ fn main() -> eframe::Result {
         .with_inner_size(saved.map_or([1280.0, 780.0], |[_, _, w, h]| [w, h]))
         .with_min_inner_size([760.0, 420.0])
         .with_drag_and_drop(true);
+    // Window / Dock icon (otherwise eframe shows its own egui logo while the app runs).
+    if let Ok(icon) = eframe::icon_data::from_png_bytes(include_bytes!("../assets/icon.png")) {
+        viewport = viewport.with_icon(icon);
+    }
     if let Some([x, y, _, _]) = saved { viewport = viewport.with_position([x, y]); }
     let options = eframe::NativeOptions { viewport, ..Default::default() };
     eframe::run_native("Oxide Commander", options, Box::new(move |cc| Ok(Box::new(app::App::new(cc, [left_arg, right_arg], defaults)))))
