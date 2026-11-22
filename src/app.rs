@@ -32,11 +32,11 @@ struct DragPayload { from: usize, paths: Vec<PathBuf> }
 
 #[derive(Clone, Copy)]
 enum Cmd {
-    Help, Terminal, OpenIn, Settings, View, Edit, Copy, Move, Rename, NewFolder, Trash, Delete, Quit,
+    Help, Terminal, OpenIn, Settings, View, QuickLook, Edit, EditSystem, Copy, Duplicate, Move, Rename, NewFolder, NewFile, Trash, Delete, Quit,
     Open, Up, Back, Forward, Refresh, ToggleHidden, SelectAll, Swap, CopyPath, Reveal,
 }
 
-enum InputKind { Copy(Vec<PathBuf>), Move(Vec<PathBuf>), Rename(PathBuf), NewFolder }
+enum InputKind { Copy(Vec<PathBuf>), Move(Vec<PathBuf>), Rename(PathBuf), New { file: bool } }
 
 #[derive(Clone, PartialEq)]
 enum OpenItem { Terminal, App(&'static str, PathBuf), Finder }
@@ -248,6 +248,10 @@ impl App {
     fn info(&mut self, text: impl Into<String>) { self.message = Some((text.into(), false, Instant::now())); }
     fn error(&mut self, text: impl Into<String>) { self.message = Some((text.into(), true, Instant::now())); }
 
+    fn open_with(&mut self, path: &Path, name: &str, app: PathBuf) {
+        if let Err(e) = ops::open_in_app(path, &app) { self.error(format!("Could not open {name}: {e}")); }
+    }
+
     fn report<T>(&mut self, r: std::io::Result<T>) {
         if let Err(e) = r { self.error(e.to_string()); }
     }
@@ -314,8 +318,13 @@ impl App {
         ctx.request_repaint_after(Duration::from_millis(if loading { 40 } else if busy { 150 } else { 1000 }));
 
         // Tab / Shift+Tab: switch between the left and right panel.
-        if std::mem::take(&mut self.tab_presses) % 2 == 1 && matches!(self.dialog, Dialog::None) {
-            self.active = 1 - self.active;
+        // In the New dialog it switches between folder and file.
+        if std::mem::take(&mut self.tab_presses) % 2 == 1 {
+            match &mut self.dialog {
+                Dialog::None => self.active = 1 - self.active,
+                Dialog::Input { kind: InputKind::New { file }, .. } => { let f = !*file; set_new_kind(&mut self.dialog, f); }
+                _ => {}
+            }
         }
     }
 
@@ -372,22 +381,17 @@ impl App {
     fn on_key(&mut self, key: Key, m: Modifiers, ctx: &egui::Context) {
         let page = (self.act().view_height / ROW_H).max(1.0) as isize;
         match key {
-            Key::F1 if m.shift => self.run(Cmd::Help, ctx),
-            Key::F1 => self.run(Cmd::OpenIn, ctx),
+            // F-keys: plain, or the second layer with ⇧ or ⌘ (see `fkeys`, shown in the bottom bar).
+            k if is_fkey(k) => {
+                if let Some((_, _, Some(cmd))) = fkeys(m.shift || m.command, self.settings.use_trash).into_iter().find(|(n, _, _)| fkey_of(n) == Some(k)) {
+                    self.run(cmd, ctx);
+                }
+            }
             Key::T if m.command => self.run(Cmd::Terminal, ctx),
             Key::Questionmark | Key::Slash if m.command => self.run(Cmd::Help, ctx),
-            Key::F2 => self.run(Cmd::Rename, ctx),
-            Key::F3 => self.run(Cmd::View, ctx),
-            Key::F4 => self.run(Cmd::Edit, ctx),
-            Key::F5 => self.run(Cmd::Copy, ctx),
-            Key::F6 if m.shift => self.run(Cmd::Rename, ctx),
-            Key::F6 => self.run(Cmd::Move, ctx),
-            Key::F7 => self.run(Cmd::NewFolder, ctx),
-            Key::F8 | Key::Delete if m.shift => self.run(Cmd::Delete, ctx),
-            Key::F8 | Key::Delete => self.run(Cmd::Trash, ctx),
-            Key::F9 => self.run(Cmd::Settings, ctx),
+            Key::Delete if m.shift => self.run(Cmd::Delete, ctx),
+            Key::Delete => self.run(Cmd::Trash, ctx),
             Key::Comma if m.command => self.run(Cmd::Settings, ctx),
-            Key::F10 => self.run(Cmd::Quit, ctx),
             Key::Q if m.command => self.run(Cmd::Quit, ctx),
             Key::ArrowUp if m.command => self.run(Cmd::Up, ctx),
             Key::ArrowDown if m.command => self.run(Cmd::Open, ctx),
@@ -414,6 +418,7 @@ impl App {
             Key::A if m.command => self.run(Cmd::SelectAll, ctx),
             Key::R if m.command => self.run(Cmd::Refresh, ctx),
             Key::N if m.command && m.shift => self.run(Cmd::NewFolder, ctx),
+            Key::N if m.command && m.alt => self.run(Cmd::NewFile, ctx),
             Key::Period if m.command && m.shift => self.run(Cmd::ToggleHidden, ctx),
             Key::H if m.command && m.shift => self.run(Cmd::ToggleHidden, ctx),
             Key::U if m.ctrl => self.run(Cmd::Swap, ctx),
@@ -497,16 +502,56 @@ impl App {
                 let Some(e) = self.act().current() else { return };
                 if e.is_folder() { return; }
                 let path = e.path.clone();
-                match read_text(&path) {
-                    Some(text) => self.dialog = Dialog::View { title: file_name(&path), text },
-                    None => self.report(ops::preview(&path)),
+                let viewer = self.settings.viewer.clone();
+                match viewer.as_str() {
+                    settings::VIEWER_QUICKLOOK => self.report(ops::preview(&path)),
+                    name if name != settings::VIEWER_BUILTIN && ops::editor_app(name).is_some() => {
+                        self.open_with(&path, name, ops::editor_app(name).unwrap());
+                    }
+                    // Built-in (also when the chosen app is gone).
+                    _ => match read_text(&path) {
+                        Some(text) => self.dialog = Dialog::View { title: file_name(&path), text },
+                        None => self.report(ops::preview(&path)),
+                    },
                 }
+            }
+            Cmd::QuickLook => {
+                let Some(e) = self.act().current().filter(|e| !e.is_parent) else { return };
+                let path = e.path.clone();
+                self.report(ops::preview(&path));
+            }
+            Cmd::EditSystem => {
+                let Some(e) = self.act().current() else { return };
+                if e.is_dir { return; }
+                let path = e.path.clone();
+                self.report(ops::open_in_editor(&path));
+            }
+            // Copies next to the originals: "name (1).ext", "name (2).ext", …
+            Cmd::Duplicate if targets.is_empty() => {}
+            Cmd::Duplicate => {
+                let mut taken = std::collections::HashSet::new();
+                let pairs = targets.into_iter().map(|s| {
+                    let d = ops::unique_target(&s, &taken);
+                    taken.insert(d.clone());
+                    (s, d)
+                }).collect();
+                self.start(Kind::Copy, pairs, Clash::Replace, ctx);
             }
             Cmd::Edit => {
                 let Some(e) = self.act().current() else { return };
                 if e.is_dir { return; }
                 let path = e.path.clone();
-                self.report(ops::open_in_editor(&path));
+                let editor = self.settings.editor.clone();
+                let app = match editor.as_str() {
+                    settings::EDITOR_SYSTEM => None,
+                    settings::EDITOR_AUTO => ops::vscode(),
+                    // The chosen app, or VS Code / the system editor when it has been removed.
+                    name => ops::editor_app(name).map(|p| (name, p)).or_else(|| ops::vscode()),
+                };
+                match app {
+                    Some((name, app)) => self.open_with(&path, name, app),
+                    None => self.report(ops::open_in_editor(&path)),
+                }
             }
             Cmd::Copy | Cmd::Move if targets.is_empty() => {}
             // One item: the full target path with its name (stem selected), so it can be renamed
@@ -522,7 +567,8 @@ impl App {
                 let path = e.path.clone();
                 self.dialog = input(InputKind::Rename(path), "Rename", format!("New name for “{one_name}”:"), file_name(&e.path), "Rename", true);
             }
-            Cmd::NewFolder => self.dialog = input(InputKind::NewFolder, "New Folder", "Name of the new folder:".into(), "untitled folder".into(), "Create", false),
+            Cmd::NewFolder => self.dialog = new_item(false),
+            Cmd::NewFile => self.dialog = new_item(true),
             Cmd::Trash if !targets.is_empty() => {
                 let pairs = targets.into_iter().map(|p| (p, PathBuf::new())).collect();
                 self.start(Kind::Trash, pairs, Clash::Replace, ctx);
@@ -544,8 +590,9 @@ impl App {
         if buf.is_empty() { return; }
         let base = self.act().path.clone();
         match kind {
-            InputKind::NewFolder => {
-                let r = std::fs::create_dir_all(ops::resolve_input(&buf, &base));
+            InputKind::New { file } => {
+                let path = ops::resolve_input(&buf, &base);
+                let r = if file { ops::create_file(&path) } else { std::fs::create_dir_all(&path) };
                 let first = Path::new(&buf).components().next().map(|c| c.as_os_str().to_string_lossy().into_owned());
                 self.act().refresh(first.as_deref());
                 self.report(r);
@@ -956,10 +1003,9 @@ impl App {
         });
         ui.add_space(4.0);
         // Function key buttons.
-        let delete_label = if self.settings.use_trash { "Trash" } else { "Delete" };
-        let keys: [(&str, &str, Cmd); 10] = [("F1", "Open in…", Cmd::OpenIn), ("F2", "Rename", Cmd::Rename), ("F3", "View", Cmd::View),
-            ("F4", "Edit", Cmd::Edit), ("F5", "Copy", Cmd::Copy), ("F6", "Move", Cmd::Move), ("F7", "New Folder", Cmd::NewFolder),
-            ("F8", delete_label, Cmd::Trash), ("F9", "Settings", Cmd::Settings), ("F10", "Quit", Cmd::Quit)];
+        // Holding ⇧ or ⌘ shows (and clicking runs) the second layer.
+        let alt = ui.input(|i| i.modifiers.shift || i.modifiers.command);
+        let keys = fkeys(alt, self.settings.use_trash);
         let gap = 6.0;
         let bw = ((ui.available_width() - gap * (keys.len() as f32 - 1.0)) / keys.len() as f32).max(60.0);
         ui.horizontal(|ui| {
@@ -974,7 +1020,8 @@ impl App {
                     job.append(k, 0.0, egui::TextFormat { font_id: pal().font(11.5), color: pal().fkey_number, ..Default::default() });
                 }
                 job.append(label, 6.0, egui::TextFormat { font_id: pal().font(13.0), color: label_color, ..Default::default() });
-                if ui.add(egui::Button::new(job).min_size(vec2(bw, 30.0))).clicked() { self.run(cmd, &ctx); }
+                let button = ui.add_enabled(cmd.is_some(), egui::Button::new(job).min_size(vec2(bw, 30.0)));
+                if let Some(cmd) = cmd && button.clicked() { self.run(cmd, &ctx); }
             }
         });
     }
@@ -992,12 +1039,23 @@ impl App {
         let mut keep = true;
         match dialog {
             Dialog::None => return false,
-            Dialog::Input { title, prompt, buf, ok, first_frame, select_stem, .. } => {
+            Dialog::Input { kind, title, prompt, buf, ok, first_frame, select_stem } => {
                 let mut submit = false;
+                let mut switch_to = None;
                 let resp = Modal::new(Id::unique("input")).show(ctx, |ui| {
                     ui.set_width(440.0);
                     ui.label(RichText::new(title.as_str()).size(16.0).strong());
                     ui.add_space(6.0);
+                    if let InputKind::New { file } = kind {
+                        ui.horizontal(|ui| {
+                            let mut f = *file;
+                            ui.radio_value(&mut f, false, RichText::new("Folder").color(pal().text));
+                            ui.radio_value(&mut f, true, RichText::new("File").color(pal().text));
+                            ui.label(RichText::new("Tab switches").weak());
+                            if f != *file { switch_to = Some(f); }
+                        });
+                        ui.add_space(4.0);
+                    }
                     ui.label(prompt.as_str());
                     ui.add_space(4.0);
                     let mut out = TextEdit::singleline(buf).desired_width(f32::INFINITY).show(ui);
@@ -1016,6 +1074,7 @@ impl App {
                     });
                 });
                 if resp.should_close() { keep = false; }
+                if let Some(f) = switch_to { set_new_kind(dialog, f); }
                 if submit {
                     keep = false;
                     if let Dialog::Input { kind, buf, .. } = std::mem::replace(dialog, Dialog::None) {
@@ -1165,7 +1224,7 @@ impl App {
                     match item {
                         OpenItem::Terminal => self.run(Cmd::Terminal, ctx),
                         OpenItem::App(name, app) => {
-                            match ops::open_dir_in_app(&dir, &app) {
+                            match ops::open_in_app(&dir, &app) {
                                 Ok(()) => self.info(format!("Opened in {name}")),
                                 Err(e) => self.error(format!("Could not open {name}: {e}")),
                             }
@@ -1206,6 +1265,25 @@ impl App {
                                 }
                             });
                     }
+                    ui.add_space(10.0);
+                    let editors: Vec<&'static str> = {
+                        let mut v: Vec<_> = ops::installed_editors().into_iter().map(|(n, _)| n).collect();
+                        if let Some((n, _)) = ops::vscode() && !v.contains(&n) { v.insert(0, n); }
+                        v
+                    };
+                    ui.horizontal(|ui| {
+                        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(RichText::new("View (F3)").strong()));
+                        let mut opts = vec![(settings::VIEWER_BUILTIN, "Built-in text viewer")];
+                        if cfg!(target_os = "macos") { opts.push((settings::VIEWER_QUICKLOOK, "Quick Look")); }
+                        opts.extend(editors.iter().map(|n| (*n, *n)));
+                        choice(ui, "viewer", &mut self.settings.viewer, &opts);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_sized(vec2(90.0, 20.0), egui::Label::new(RichText::new("Edit (F4)").strong()));
+                        let mut opts = vec![(settings::EDITOR_AUTO, "Automatic (VS Code if installed)"), (settings::EDITOR_SYSTEM, "System text editor")];
+                        opts.extend(editors.iter().map(|n| (*n, *n)));
+                        choice(ui, "editor", &mut self.settings.editor, &opts);
+                    });
                     ui.add_space(10.0);
                     ui.label(RichText::new("Startup").strong());
                     ui.checkbox(&mut self.settings.remember_folders, RichText::new("Reopen the last folders when the app starts").color(pal().text));
@@ -1444,6 +1522,41 @@ fn input(kind: InputKind, title: &str, prompt: String, buf: String, ok: &'static
     Dialog::Input { kind, title: title.into(), prompt, buf, ok, first_frame: true, select_stem }
 }
 
+const NEW_FOLDER: &str = "untitled folder";
+const NEW_FILE: &str = "untitled.txt";
+
+/// F7 dialog: a new folder, or a new empty file (`file`).
+fn new_item(file: bool) -> Dialog {
+    let mut d = input(InputKind::New { file: false }, "New Folder", "Name of the new folder:".into(), NEW_FOLDER.into(), "Create", false);
+    if file { set_new_kind(&mut d, true); }
+    d
+}
+
+/// Switch the New dialog between folder and file; an untouched default name follows along.
+fn set_new_kind(d: &mut Dialog, to_file: bool) {
+    let Dialog::Input { kind: InputKind::New { file }, title, prompt, buf, first_frame, select_stem, .. } = d else { return };
+    *file = to_file;
+    let what = if to_file { "file" } else { "folder" };
+    *title = format!("New {}", if to_file { "File" } else { "Folder" });
+    *prompt = format!("Name of the new {what}:");
+    if buf.as_str() == NEW_FOLDER || buf.as_str() == NEW_FILE { *buf = (if to_file { NEW_FILE } else { NEW_FOLDER }).into(); }
+    *select_stem = to_file;
+    // Give the name field the keyboard again (a radio click takes it) and reselect the name.
+    *first_frame = true;
+}
+
+/// Settings combo box over (stored key, label) pairs; an unknown stored key is shown as is.
+fn choice(ui: &mut Ui, id: &str, value: &mut String, opts: &[(&str, &str)]) {
+    let shown = opts.iter().find(|(k, _)| *k == value.as_str()).map_or(value.as_str(), |(_, l)| l).to_string();
+    egui::ComboBox::from_id_salt(id).width(260.0)
+        .selected_text(RichText::new(shown).color(pal().text))
+        .show_ui(ui, |ui| {
+            for (k, l) in opts {
+                ui.selectable_value(value, k.to_string(), *l);
+            }
+        });
+}
+
 fn file_name(p: &Path) -> String {
     p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| p.display().to_string())
 }
@@ -1466,6 +1579,29 @@ fn dir_string(p: &Path) -> String {
 /// Keys the app keeps while the built-in terminal has the keyboard.
 fn app_key_in_terminal(k: Key, m: Modifiers) -> bool {
     k == Key::F1 || (m.mac_cmd && matches!(k, Key::T | Key::Q | Key::Comma))
+}
+
+/// The function-key bar: (key, label, command) for the plain layer, or with `alt` (⇧ or ⌘ held)
+/// the second one. ⌘F5 never reaches the app (macOS: VoiceOver), so Duplicate is ⇧F5 from the keyboard.
+fn fkeys(alt: bool, use_trash: bool) -> [(&'static str, &'static str, Option<Cmd>); 10] {
+    if alt {
+        [("F1", "Help", Some(Cmd::Help)), ("F2", "", None), ("F3", "Quick Look", Some(Cmd::QuickLook)),
+         ("F4", "Text Editor", Some(Cmd::EditSystem)), ("F5", "Duplicate", Some(Cmd::Duplicate)), ("F6", "Rename", Some(Cmd::Rename)),
+         ("F7", "New File", Some(Cmd::NewFile)), ("F8", "Delete", Some(Cmd::Delete)), ("F9", "", None), ("F10", "", None)]
+    } else {
+        [("F1", "Open in…", Some(Cmd::OpenIn)), ("F2", "Rename", Some(Cmd::Rename)), ("F3", "View", Some(Cmd::View)),
+         ("F4", "Edit", Some(Cmd::Edit)), ("F5", "Copy", Some(Cmd::Copy)), ("F6", "Move", Some(Cmd::Move)),
+         ("F7", "New Folder", Some(Cmd::NewFolder)), ("F8", if use_trash { "Trash" } else { "Delete" }, Some(Cmd::Trash)),
+         ("F9", "Settings", Some(Cmd::Settings)), ("F10", "Quit", Some(Cmd::Quit))]
+    }
+}
+
+fn fkey_of(name: &str) -> Option<Key> {
+    Some(match name {
+        "F1" => Key::F1, "F2" => Key::F2, "F3" => Key::F3, "F4" => Key::F4, "F5" => Key::F5,
+        "F6" => Key::F6, "F7" => Key::F7, "F8" => Key::F8, "F9" => Key::F9, "F10" => Key::F10,
+        _ => return None,
+    })
 }
 
 fn is_fkey(k: Key) -> bool {
@@ -1502,21 +1638,23 @@ const HELP: &[(&str, &str)] = &[
     ("⌘-click  ⇧-click", "Add to selection / select range"),
     ("Type letters", "Jump to a file by name"),
     ("⌘F", "Filter the current folder"),
+    ("⇧ or ⌘ + F-key", "Second layer: hold ⇧ or ⌘ and the bottom bar shows it"),
     ("F2 / ⇧F6", "Rename"),
-    ("F3", "View / Quick Look"),
-    ("F4", "Edit in text editor"),
-    ("F5", "Copy to the other panel"),
+    ("F3  /  ⇧F3", "View (built-in viewer, Quick Look or an editor, see Settings) / Quick Look"),
+    ("F4  /  ⇧F4", "Edit (VS Code if installed, or the editor chosen in Settings) / system text editor"),
+    ("F5  /  ⇧F5", "Copy to the other panel / duplicate in the same folder"),
     ("F6", "Move to the other panel"),
-    ("F7  /  ⇧⌘N", "New folder"),
+    ("F7  /  ⇧⌘N", "New folder (Tab in the dialog: new file instead)"),
+    ("⇧F7 ⌘F7  /  ⌥⌘N", "New file"),
     ("F8  /  ⌘⌫", "Move to Trash (or delete, see Settings)"),
-    ("⇧F8", "Delete permanently"),
+    ("⇧F8 / ⌘F8", "Delete permanently"),
     ("⇧⌘.", "Show / hide hidden files in this panel"),
     ("⌃U", "Swap panels"),
     ("⌘R", "Refresh"),
     ("F1", "Open the folder in… the terminal, VS Code or another editor, Finder (F1 twice: terminal)"),
     ("⌘T", "Terminal below the current panel; again hides it (or a separate window, see Settings)"),
-    ("⇧F1 / ⌘?", "This help"),
-    ("F9 / ⌘,", "Settings (look, terminal, Trash or delete, startup folders)"),
+    ("⇧F1 ⌘F1 / ⌘?", "This help"),
+    ("F9 / ⌘,", "Settings (look, terminal, viewer and editor, Trash or delete, startup folders)"),
     ("F10 / ⌘Q", "Quit"),
 ];
 

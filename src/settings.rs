@@ -25,6 +25,13 @@ impl Default for View {
 
 const SIDES: [&str; 2] = ["left", "right"];
 
+/// F3: the built-in text viewer (Quick Look for files that are not text).
+pub const VIEWER_BUILTIN: &str = "builtin";
+pub const VIEWER_QUICKLOOK: &str = "quicklook";
+/// F4: VS Code when installed, else the system text editor.
+pub const EDITOR_AUTO: &str = "auto";
+pub const EDITOR_SYSTEM: &str = "system";
+
 /// What F1 opens.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum TerminalMode {
@@ -60,6 +67,10 @@ pub struct Settings {
     /// macOS terminal app opened by F1 ("Terminal", "iTerm", …) in External mode.
     pub terminal: String,
     pub terminal_mode: TerminalMode,
+    /// F3: [`VIEWER_BUILTIN`], [`VIEWER_QUICKLOOK`] or the name of an editor app.
+    pub viewer: String,
+    /// F4: [`EDITOR_AUTO`], [`EDITOR_SYSTEM`] or the name of an editor app.
+    pub editor: String,
     /// Last window position and size in points: [x, y, width, height].
     pub window: Option<[f32; 4]>,
 }
@@ -70,6 +81,7 @@ impl Default for Settings {
             theme: Theme::Light, use_trash: true, remember_folders: true,
             folders: [None, None], views: [View::default(); 2], terminal: "Terminal".into(),
             terminal_mode: TerminalMode::Split,
+            viewer: VIEWER_BUILTIN.into(), editor: EDITOR_AUTO.into(),
             window: None,
         }
     }
@@ -122,6 +134,8 @@ fn parse(text: &str) -> Settings {
         views: parse_views(&map),
         terminal: map.get("terminal").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.terminal),
         terminal_mode: map.get("terminal_mode").and_then(|v| TerminalMode::from_key(v.trim())).unwrap_or(d.terminal_mode),
+        viewer: map.get("viewer").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.viewer),
+        editor: map.get("editor").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.editor),
         window: map.get("window").and_then(|v| parse_window(v)),
     }
 }
@@ -147,8 +161,8 @@ fn parse_views(map: &HashMap<&str, &str>) -> [View; 2] {
 }
 
 fn format(s: &Settings) -> String {
-    let mut out = format!("theme={}\nuse_trash={}\nremember_folders={}\nterminal={}\nterminal_mode={}\n",
-        s.theme.key(), s.use_trash, s.remember_folders, s.terminal, s.terminal_mode.key());
+    let mut out = format!("theme={}\nuse_trash={}\nremember_folders={}\nterminal={}\nterminal_mode={}\nviewer={}\neditor={}\n",
+        s.theme.key(), s.use_trash, s.remember_folders, s.terminal, s.terminal_mode.key(), s.viewer, s.editor);
     if let Some([x, y, w, h]) = s.window { out += &format!("window={x:.0},{y:.0},{w:.0},{h:.0}\n"); }
     for ((side, v), folder) in SIDES.iter().zip(&s.views).zip(&s.folders) {
         out += &format!("{side}.sort={}\n{side}.ascending={}\n{side}.show_hidden={}\n", sort_name(v.sort), v.ascending, v.show_hidden);
@@ -180,6 +194,8 @@ mod tests {
             folders: [Some(PathBuf::from("/tmp/a=b c")), None],
             terminal: "iTerm".into(),
             terminal_mode: TerminalMode::External,
+            viewer: "Zed".into(),
+            editor: "Sublime Text".into(),
             window: Some([40.0, 60.0, 1400.0, 900.0]),
             views: [
                 View { sort: SortKey::Size, ascending: false, show_hidden: true },

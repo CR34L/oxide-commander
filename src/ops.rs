@@ -1,4 +1,4 @@
-//! Basic file operations: copy, move/rename, mkdir, delete.
+//! Basic file operations: copy, move/rename, mkdir, new file, delete.
 
 use std::fs;
 use std::io;
@@ -16,6 +16,12 @@ pub fn resolve_input(input: &str, base: &Path) -> PathBuf {
         PathBuf::from(input)
     };
     if expanded.is_absolute() { expanded } else { base.join(expanded) }
+}
+
+/// Create a new empty file (and missing parent folders); fails if something already has that name.
+pub fn create_file(path: &Path) -> io::Result<()> {
+    if let Some(dir) = path.parent() { fs::create_dir_all(dir)?; }
+    fs::OpenOptions::new().write(true).create_new(true).open(path).map(|_| ())
 }
 
 pub fn home_dir() -> Option<PathBuf> {
@@ -298,9 +304,28 @@ pub fn installed_editors() -> Vec<(&'static str, PathBuf)> {
     }).collect()
 }
 
-/// Open `dir` in an app (`open -a <app> <folder>`): editors open it as their project/workspace.
-pub fn open_dir_in_app(dir: &Path, app: &Path) -> io::Result<()> {
-    std::process::Command::new("open").arg("-a").arg(app).arg(dir).spawn().map(|_| ())
+/// Open a file or folder in an app (macOS: `open -a <app> <path>`, editors open a folder as
+/// their project/workspace; elsewhere `app` is a program to run with the path).
+pub fn open_in_app(target: &Path, app: &Path) -> io::Result<()> {
+    if cfg!(target_os = "macos") {
+        std::process::Command::new("open").arg("-a").arg(app).arg(target).spawn().map(|_| ())
+    } else {
+        std::process::Command::new(app).arg(target).spawn().map(|_| ())
+    }
+}
+
+/// VS Code, if installed: (name, app bundle on macOS / `code` program elsewhere).
+pub fn vscode() -> Option<(&'static str, PathBuf)> {
+    if cfg!(target_os = "macos") {
+        return installed_editors().into_iter().find(|(n, _)| n.starts_with("Visual Studio Code"));
+    }
+    let exe = if cfg!(windows) { "code.cmd" } else { "code" };
+    std::env::split_paths(&std::env::var_os("PATH")?).map(|d| d.join(exe)).find(|p| p.is_file()).map(|p| ("Visual Studio Code", p))
+}
+
+/// Installed editor app by name (from [`installed_editors`], or VS Code found on the PATH).
+pub fn editor_app(name: &str) -> Option<PathBuf> {
+    installed_editors().into_iter().chain(vscode()).find(|(n, _)| *n == name).map(|(_, p)| p)
 }
 
 /// Open a terminal window in `dir`. `mac_app` names the macOS terminal app.
@@ -345,6 +370,19 @@ mod tests {
         let _ = fs::remove_dir_all(&d);
         fs::create_dir_all(&d).unwrap();
         d
+    }
+
+    #[test]
+    fn create_file_makes_parents_and_refuses_existing() {
+        let t = tmp("newfile");
+        let f = t.join("sub/dir/notes.txt");
+        create_file(&f).unwrap();
+        assert!(f.is_file());
+        assert_eq!(fs::metadata(&f).unwrap().len(), 0);
+        fs::write(&f, b"keep").unwrap();
+        assert_eq!(create_file(&f).unwrap_err().kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(fs::read(&f).unwrap(), b"keep");
+        let _ = fs::remove_dir_all(&t);
     }
 
     #[test]

@@ -59,6 +59,7 @@ Releases are built by GitHub Actions when a version tag is pushed
 ```sh
 cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
 ./bundle-macos.sh                               # builds dist/Oxide Commander.app
+./make-dmg.sh                                   # builds the installer dist/Oxide-Commander-<version>-macos-<arch>.dmg
 ```
 
 ## Keys
@@ -78,19 +79,25 @@ cargo run --release -- [LEFT_DIR] [RIGHT_DIR]   # defaults: home, Downloads
 | ⌘F | filter |
 | F1 | open the folder in… terminal, VS Code / other editor, Finder (F1 twice: terminal) |
 | ⌘T | terminal below the current panel; again: hide it (or a separate window, see Settings) |
-| ⇧F1 / ⌘? | help |
-| F2 / ⇧F6 | rename |
-| F3 | view text / Quick Look |
-| F4 | edit in text editor |
+| ⇧F1 / ⌘F1 / ⌘? | help |
+| F2 / ⇧F6 / ⌘F6 | rename |
+| F3 | view: built-in text viewer (default), Quick Look or an editor, see Settings |
+| ⇧F3 / ⌘F3 | Quick Look |
+| F4 | edit: VS Code if installed, else the system text editor; choose another in Settings |
+| ⇧F4 / ⌘F4 | edit in the system text editor |
 | F5 | copy to other panel |
+| ⇧F5 | duplicate in the same folder (“name (1)”) |
 | F6 | move to other panel |
-| F7 / ⇧⌘N | new folder |
+| F7 / ⇧⌘N | new folder (Tab in the dialog switches to a new file) |
+| ⇧F7 / ⌘F7 / ⌥⌘N | new file |
 | F8 / ⌘⌫ | move to Trash (or delete, see Settings) |
-| ⇧F8 | delete permanently |
+| ⇧F8 / ⌘F8 | delete permanently |
 | ⇧⌘. / ⇧⌘H | show hidden files in this panel |
 | ⌃U | swap panels |
 | F9 / ⌘, | settings |
 | F10 / ⌘Q | quit |
+
+Hold ⇧ or ⌘ and the function-key bar shows the second layer (⌘F5 is taken by macOS for VoiceOver, so Duplicate is ⇧F5).
 
 On a Mac the F-keys are media keys by default. Hold `fn`, or enable *System
 Settings → Keyboard → Use F1, F2, etc. keys as standard function keys*. The
