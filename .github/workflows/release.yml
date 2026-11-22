@@ -33,13 +33,14 @@ jobs:
       - name: Test
         run: cargo test --release
 
-      - name: Build app bundle
-        run: ./bundle-macos.sh
+      - name: Build app bundle and installer disk image
+        run: ./make-dmg.sh
 
       - name: Package
         run: |
           ditto -c -k --keepParent "dist/Oxide Commander.app" "Oxide-Commander-${GITHUB_REF_NAME}-macos-arm64.zip"
-          shasum -a 256 Oxide-Commander-*.zip > SHA256SUMS.txt
+          cp dist/Oxide-Commander-*.dmg "Oxide-Commander-${GITHUB_REF_NAME}-macos-arm64.dmg"
+          shasum -a 256 Oxide-Commander-*.dmg Oxide-Commander-*.zip > SHA256SUMS.txt
 
       - name: Publish release
         env:
@@ -48,7 +49,8 @@ jobs:
           {
             echo "Oxide Commander ${GITHUB_REF_NAME} for Apple Silicon Macs (M1 and later, macOS 11+)."
             echo
-            echo "Download the zip, unzip it and drag **Oxide Commander.app** to Applications."
+            echo "Download the dmg, open it and drag **Oxide Commander.app** onto Applications"
+            echo "(or use the zip: unzip it and move the app to Applications)."
             echo
             echo "The app is not notarized. On first launch right-click it and choose **Open**,"
             echo "or run: \`xattr -dr com.apple.quarantine \"/Applications/Oxide Commander.app\"\`"
@@ -56,5 +58,5 @@ jobs:
             echo "Tip: give Oxide Commander **Full Disk Access** (System Settings → Privacy & Security) so"
             echo "macOS stops asking about each folder; the sidebar has a link to that setting."
           } > notes.md
-          gh release create "$GITHUB_REF_NAME" Oxide-Commander-*.zip SHA256SUMS.txt \
+          gh release create "$GITHUB_REF_NAME" Oxide-Commander-*.dmg Oxide-Commander-*.zip SHA256SUMS.txt \
             --title "Oxide Commander $GITHUB_REF_NAME" --notes-file notes.md
