@@ -73,6 +73,18 @@ pub struct Settings {
     pub editor: String,
     /// Last window position and size in points: [x, y, width, height].
     pub window: Option<[f32; 4]>,
+    /// Recently visited folders for the sidebar, newest first (at most [`RECENT_MAX`]).
+    pub recent: Vec<PathBuf>,
+}
+
+pub const RECENT_MAX: usize = 12;
+
+/// Put `dir` on top of the recent list, dropping an older copy and the oldest beyond the limit.
+pub fn push_recent(list: &mut Vec<PathBuf>, dir: &std::path::Path) {
+    if list.first().is_some_and(|d| d == dir) { return; }
+    list.retain(|d| d != dir);
+    list.insert(0, dir.to_path_buf());
+    list.truncate(RECENT_MAX);
 }
 
 impl Default for Settings {
@@ -82,7 +94,7 @@ impl Default for Settings {
             folders: [None, None], views: [View::default(); 2], terminal: "Terminal".into(),
             terminal_mode: TerminalMode::Split,
             viewer: VIEWER_BUILTIN.into(), editor: EDITOR_AUTO.into(),
-            window: None,
+            window: None, recent: Vec::new(),
         }
     }
 }
@@ -137,6 +149,8 @@ fn parse(text: &str) -> Settings {
         viewer: map.get("viewer").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.viewer),
         editor: map.get("editor").map(|v| v.trim().to_string()).filter(|v| !v.is_empty()).unwrap_or(d.editor),
         window: map.get("window").and_then(|v| parse_window(v)),
+        recent: (0..RECENT_MAX).filter_map(|i| map.get(format!("recent.{i}").as_str()))
+            .filter(|v| !v.is_empty()).map(PathBuf::from).collect(),
     }
 }
 
@@ -170,6 +184,9 @@ fn format(s: &Settings) -> String {
             out += &format!("{side}.folder={f}\n");
         }
     }
+    for (i, d) in s.recent.iter().filter_map(|d| d.to_str()).filter(|d| !d.contains('\n')).enumerate() {
+        out += &format!("recent.{i}={d}\n");
+    }
     out
 }
 
@@ -197,6 +214,7 @@ mod tests {
             viewer: "Zed".into(),
             editor: "Sublime Text".into(),
             window: Some([40.0, 60.0, 1400.0, 900.0]),
+            recent: vec![PathBuf::from("/Users/me/x=y"), PathBuf::from("/tmp")],
             views: [
                 View { sort: SortKey::Size, ascending: false, show_hidden: true },
                 View { sort: SortKey::Date, ascending: true, show_hidden: false },
@@ -207,5 +225,17 @@ mod tests {
         assert_eq!(parse("window=0,0,10,10").window, None, "tiny windows are ignored");
         // Files written by the previous version (views only) still load.
         assert_eq!(parse("left.sort=size\nleft.ascending=false").views[0].sort, SortKey::Size);
+    }
+
+    #[test]
+    fn recent_list_moves_to_top_and_is_capped() {
+        let mut l = Vec::new();
+        for i in 0..20 { push_recent(&mut l, &PathBuf::from(format!("/d{i}"))); }
+        assert_eq!(l.len(), RECENT_MAX);
+        assert_eq!(l[0], PathBuf::from("/d19"));
+        push_recent(&mut l, &PathBuf::from("/d15"));
+        assert_eq!(l[0], PathBuf::from("/d15"));
+        assert_eq!(l.iter().filter(|d| **d == PathBuf::from("/d15")).count(), 1);
+        assert_eq!(l.len(), RECENT_MAX);
     }
 }

@@ -61,6 +61,9 @@ enum Dialog {
     Settings,
 }
 
+/// How long a panel must stay in a folder before it goes on the recent list.
+const RECENT_DWELL: Duration = Duration::from_secs(10);
+
 pub struct App {
     panels: [Panel; 2],
     active: usize,
@@ -97,6 +100,8 @@ pub struct App {
     last_open_in: Option<String>,
     /// Window geometry last seen and since when (saved once it has been still for a moment).
     window_seen: Option<([f32; 4], Instant)>,
+    /// Each panel's folder, since when it is shown, and whether it was added to the recent list.
+    recent_seen: [Option<(PathBuf, Instant, bool)>; 2],
 }
 
 /// A panel's terminal. The shell keeps running while the pane is hidden.
@@ -111,7 +116,8 @@ struct SideTerm {
 impl App {
     /// `args`: folders from the command line; `defaults`: used when nothing else applies.
     pub fn new(cc: &eframe::CreationContext<'_>, args: [Option<PathBuf>; 2], defaults: [PathBuf; 2]) -> Self {
-        let settings = settings::load();
+        let mut settings = settings::load();
+        settings.recent.retain(|d| d.is_dir());
         theme::apply(&cc.egui_ctx, settings.theme);
         let start = |i: usize| -> PathBuf {
             let remembered = settings.folders[i].clone().filter(|p| settings.remember_folders && p.is_dir());
@@ -144,6 +150,7 @@ impl App {
             term_input: Vec::new(),
             last_open_in: None,
             window_seen: None,
+            recent_seen: [None, None],
         }
     }
 
@@ -308,6 +315,20 @@ impl App {
         self.track_window(ctx);
         self.settings.views = [self.panels[0].view(), self.panels[1].view()];
         self.settings.folders = [Some(self.panels[0].path.clone()), Some(self.panels[1].path.clone())];
+        // Recent folders: a panel's folder counts once it has stayed there for RECENT_DWELL,
+        // so folders only passed through on the way somewhere else are not remembered.
+        for (p, seen) in self.panels.iter().zip(&mut self.recent_seen) {
+            if p.is_loading() { continue; }
+            match seen {
+                Some((dir, since, done)) if *dir == p.path => {
+                    if !*done && since.elapsed() >= RECENT_DWELL && p.path.is_dir() {
+                        settings::push_recent(&mut self.settings.recent, &p.path);
+                        *done = true;
+                    }
+                }
+                _ => *seen = Some((p.path.clone(), Instant::now(), false)),
+            }
+        }
         if self.settings != self.saved_settings {
             settings::save(&self.settings);
             self.saved_settings = self.settings.clone();
@@ -668,7 +689,12 @@ impl App {
         let mut open_settings = false;
         ScrollArea::vertical().auto_shrink(false).show(ui, |ui| {
             ui.add_space(6.0);
-            for (title, list) in [("Favorites", &self.favorites), ("Devices", &self.drives)] {
+            let recent: Vec<Place> = self.settings.recent.iter().map(|d| Place {
+                name: d.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_else(|| d.display().to_string()),
+                path: d.clone(), icon: places::Icon::Folder, space: None,
+            }).collect();
+            for (title, list) in [("Favorites", &self.favorites), ("Recent", &recent), ("Devices", &self.drives)] {
+                if list.is_empty() { continue; }
                 ui.label(RichText::new(title.to_uppercase()).size(11.0).strong().color(pal().text_dim));
                 ui.add_space(2.0);
                 for place in list {
@@ -689,6 +715,8 @@ impl App {
                         let bar = Rect::from_min_size(rect.min + vec2(32.0, 22.0), vec2((rect.width() - 40.0).max(10.0), 4.0));
                         paint_capacity(p, bar, 1.0 - free as f32 / total.max(1) as f32);
                         resp.clone().on_hover_text(format!("{} free of {}\n{}", human_size(free), human_size(total), place.path.display()));
+                    } else if title == "Recent" {
+                        resp.clone().on_hover_text(place.path.display().to_string());
                     }
                     if resp.clicked() { go = Some(place.path.clone()); }
                     if let Some(pl) = resp.dnd_release_payload::<DragPayload>() { drop = Some(((*pl).clone(), place.path.clone())); }
