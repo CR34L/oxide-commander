@@ -8,7 +8,8 @@ built with eframe/egui: one standalone binary for macOS, Windows and Linux.
 
 - **Sidebar**: the standard folders (Home, Desktop, Documents, Downloads, …). On macOS,
   if you give the app Full Disk Access (System Settings → Privacy & Security), it shows
-  your Finder sidebar Favorites instead, in Finder's order. Below them, every mounted drive (internal
+  your Finder sidebar Favorites instead, in Finder's order. Below them, your recent folders (the last
+  12 where a panel stayed at least 10 seconds), then every mounted drive (internal
   disks, USB, disk images, network shares) with a capacity bar, refreshed every few seconds.
 - **Mouse like Finder / Explorer**: click selects, double-click opens (on `..`: goes up),
   ⌘/Ctrl-click and ⇧-click extend the selection, right-click for actions, clicking empty
