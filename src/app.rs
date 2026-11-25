@@ -1359,6 +1359,12 @@ impl eframe::App for App {
     /// Take Tab out of the input before egui sees it: egui would otherwise use it to
     /// cycle keyboard focus through buttons and the filter box instead of switching panels.
     fn raw_input_hook(&mut self, ctx: &egui::Context, raw_input: &mut egui::RawInput) {
+        // A drag handed to the system ended: the system kept the mouse-up, so tell egui.
+        if crate::dragout::take_ended() {
+            let pos = ctx.input(|i| i.pointer.latest_pos()).unwrap_or_default();
+            raw_input.events.push(Event::PointerButton { pos, button: egui::PointerButton::Primary, pressed: false, modifiers: ctx.input(|i| i.modifiers) });
+            raw_input.events.push(Event::PointerGone);
+        }
         if self.term_has_keys() {
             // Everything typed goes to the shell, except the keys that work the app itself.
             let mut taken = Vec::new();
@@ -1387,7 +1393,7 @@ impl eframe::App for App {
         }
     }
 
-    fn ui(&mut self, ui: &mut Ui, _frame: &mut eframe::Frame) {
+    fn ui(&mut self, ui: &mut Ui, frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
         self.tick(&ctx);
         self.handle_keys(&ctx);
@@ -1456,6 +1462,17 @@ impl eframe::App for App {
                 painter.rect_filled(r, 5.0, pal().accent);
                 painter.galley(r.min + vec2(8.0, 4.0), galley, pal().accent_text);
             }
+
+        // Files dragged out of the window go on as a system drag, so Finder, Mail and
+        // other apps can take them.
+        if let Some(pl) = DragAndDrop::payload::<DragPayload>(&ctx) {
+            let (down, pos) = ctx.input(|i| (i.pointer.primary_down(), i.pointer.hover_pos()));
+            let outside = !pos.is_some_and(|p| ctx.content_rect().shrink(2.0).contains(p));
+            if down && outside && crate::dragout::start(frame, &pl.paths) {
+                DragAndDrop::clear_payload(&ctx);
+            }
+        }
+        if crate::dragout::active() { ctx.request_repaint_after(Duration::from_millis(100)); }
 
         self.dialogs(&ctx);
     }

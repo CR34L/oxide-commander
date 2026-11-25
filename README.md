@@ -22,6 +22,8 @@ built with eframe/egui: one standalone binary for macOS, Windows and Linux.
   (Windows: `%APPDATA%\Oxide Commander`, Linux: `~/.config/oxide-commander`).
 - **Drag and drop** between panels, onto folders, onto sidebar drives, or from
   Finder/Explorer. You're asked whether to copy or move.
+  On macOS you can also drag files out of the window into Finder, Mail, a browser
+  or any other app that takes files (Finder moves on the same drive, copies across drives).
 - Folder sizes are calculated in the background (shown as "…" until ready),
   so sorting by Size works for folders too.
 - Copy, move and delete run in the background with a progress bar, MB/s, time left
